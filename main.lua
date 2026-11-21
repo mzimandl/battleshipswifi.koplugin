@@ -155,9 +155,10 @@ local function fill_polygon(bb, pts, color)
     end
 end
 
---- An explosion: a star with uneven spikes around (cx, cy), radius r.
-local function blast(bb, cx, cy, r, color, phase)
-    local pts, spikes = {}, 8
+--- An explosion: a star with uneven spikes (8 by default) around (cx, cy), radius r.
+local function blast(bb, cx, cy, r, color, phase, spikes)
+    local pts = {}
+    spikes = spikes or 8
     phase = phase or 0
     for i = 0, 2 * spikes - 1 do
         local k
@@ -180,16 +181,52 @@ local function ring(bb, cx, cy, r, w, color)
     bb:paintCircle(cx, cy, r, color, math.max(1, math.min(r, math.floor(w))))
 end
 
--- Animation frames: how many of each kind (frame 1 is shown with the result).
-local FRAMES = { miss = 3, hit = 3, sunk = 4 }
+--- A flame (hit ship) standing on (cx, cy): black, with a white core. h = height.
+local FLAME = {}
+for i = 0, 8 do -- round bottom, then the left tongue, the main tip, the right side
+    local t = math.pi * i / 8
+    FLAME[#FLAME + 1] = { 0.28 * math.cos(t), 0.12 + 0.28 * math.sin(t) }
+end
+for _i, p in ipairs({ { -0.3, -0.04 }, { -0.25, -0.22 }, { -0.17, -0.4 }, { -0.1, -0.22 }, { -0.03, -0.3 },
+    { 0.06, -0.58 }, { 0.2, -0.33 }, { 0.29, -0.1 } }) do
+    FLAME[#FLAME + 1] = p
+end
+local function flame(bb, cx, cy, h)
+    for pass = 1, 2 do
+        local k, dy = pass == 1 and h or h * 0.45, pass == 1 and 0 or h * 0.12
+        local pts = {}
+        for _i, p in ipairs(FLAME) do pts[#pts + 1] = { cx + p[1] * k, cy + dy + p[2] * k } end
+        fill_polygon(bb, pts, pass == 1 and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_WHITE)
+    end
+end
+
+--- A puff of smoke: outlined overlapping circles around (cx, cy), size r.
+local function puff(bb, cx, cy, r, w)
+    local blobs = { { -0.5, 0.2 }, { 0.5, 0.2 }, { 0, -0.35 } }
+    for pass = 1, 2 do
+        for _i, o in ipairs(blobs) do
+            disc(bb, cx + o[1] * r, cy + o[2] * r, r * 0.62 - (pass == 2 and w or 0),
+                pass == 1 and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_WHITE)
+        end
+    end
+end
+
+-- Animations: frame 1 is shown with the result, the next ones every FRAME_TIME.
+-- A sunk ship blows up in up to SINK_STEPS steps along its squares, then sinks.
 local FRAME_TIME = 0.15 -- seconds
+local SINK_STEPS = 4
+local function frame_count(kind, cells)
+    if kind == "miss" then return 6 end
+    if kind == "hit" then return 5 end
+    return math.min(#cells, SINK_STEPS) + 3
+end
 
 --- A 10 × 10 board with column letters and row numbers.
 -- mode "own": board = Board (our ships and the opponent's shots), selected = ship index
 -- (squares it can't be moved to are shaded);
 -- mode "target": target = Board.target(). last = { x, y } is outlined.
--- anim = { kind = "miss" | "hit" | "sunk", set = { [y * SIZE + x] = true }, frame }
--- is drawn on its squares (see GameScreen:animate()).
+-- anim = { kind = "miss" | "hit" | "sunk", cells, set = { [y * SIZE + x] = true },
+-- ship (sunk), frame } is drawn over its squares and their neighbours (see GameScreen:animate()).
 -- on_tap(x, y) makes it tappable.
 local BoardWidget = InputContainer:extend{
     size = nil,
@@ -238,17 +275,25 @@ function BoardWidget:onTapBoard(_args, ges)
     return true
 end
 
---- Screen rectangle around the given squares (list of { x, y }).
-function BoardWidget:region(cells)
-    local c = self.cell
+-- Squares' bounding box grown by `grow` squares, kept within lo..SIZE - 1.
+local function bounds(cells, grow, lo)
     local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
     for _i, cell in ipairs(cells) do
         x0, y0 = math.min(x0, cell[1]), math.min(y0, cell[2])
         x1, y1 = math.max(x1, cell[1]), math.max(y1, cell[2])
     end
+    local hi = Board.SIZE - 1
+    return math.max(lo, x0 - grow), math.max(lo, y0 - grow), math.min(hi, x1 + grow), math.min(hi, y1 + grow)
+end
+
+--- Screen rectangle an animation of the given squares (list of { x, y }) paints
+-- on: the squares, their neighbours and, at the edge, the labels.
+function BoardWidget:region(cells)
+    local c = self.cell
+    local x0, y0, x1, y1 = bounds(cells, 1, -1)
     return Geom:new{
         x = self.dimen.x + c * (x0 + 1), y = self.dimen.y + c * (y0 + 1),
-        w = c * (x1 - x0 + 1) + self.line, h = c * (y1 - y0 + 1) + self.line,
+        w = c * (x1 - x0 + 1) + 2 * self.line, h = c * (y1 - y0 + 1) + 2 * self.line,
     }
 end
 
@@ -277,41 +322,146 @@ function BoardWidget:paintHull(bb, px, py, x, y, ship, color, deck)
     end
 end
 
---- Animation frame on a square.
-function BoardWidget:paintFrame(bb, px, py, kind, frame)
-    local c = self.cell
-    local cx, cy = px + math.floor(c / 2), py + math.floor(c / 2)
+--- The running animation, over the board (grid origin ox, oy). Frames are
+-- black and white only: fast refreshes don't show grays well.
+function BoardWidget:paintAnim(bb, ox, oy)
+    local anim, c, line = self.anim, self.cell, self.line
+    local f = anim.frame
     local black, white = Blitbuffer.COLOR_BLACK, Blitbuffer.COLOR_WHITE
-    if kind == "miss" then -- a splash spreading in rings
-        if frame == 1 then
-            disc(bb, cx, cy, c * 0.16, black)
-        elseif frame == 2 then
-            ring(bb, cx, cy, c * 0.3, c / 10, black)
-            disc(bb, cx, cy, c * 0.08, black)
-        else
-            ring(bb, cx, cy, c * 0.44, c / 16, black)
-            for i = 0, 3 do
-                local a = math.pi / 4 + i * math.pi / 2
-                disc(bb, cx + c * 0.26 * math.cos(a), cy + c * 0.26 * math.sin(a), c * 0.05, black)
+    local half = math.floor(c / 2)
+    local w = math.max(2, math.floor(c / 20))
+    local function center(cell) return ox + cell[1] * c + half, oy + cell[2] * c + half end
+    local function shell(cx, cy) -- coming in from above
+        disc(bb, cx, cy - c * 0.15, c / 12, black)
+        for i = 1, 4 do
+            bb:paintRect(cx - math.floor(w / 2), math.floor(cy - c * 0.15 - c * 0.05 - i * c * 0.17), w, math.floor(c * 0.1), black)
+        end
+    end
+    local function flash() -- black over the squares and their neighbours
+        local x0, y0, x1, y1 = bounds(anim.cells, 1, 0)
+        bb:paintRect(ox + x0 * c, oy + y0 * c, (x1 - x0 + 1) * c + line, (y1 - y0 + 1) * c + line, black)
+    end
+
+    if anim.kind == "miss" then
+        local cx, cy = center(anim.cells[1])
+        if f == 1 then
+            shell(cx, cy)
+        elseif f == 2 then -- splash crown
+            for i = -2, 2 do
+                local x = cx + i * c * 0.12
+                fill_polygon(bb, { { x - c * 0.07, cy }, { x + c * 0.07, cy },
+                    { x + i * c * 0.1, cy - c * (0.32 - math.abs(i) * 0.07) } }, black)
+            end
+            bb:paintRect(math.floor(cx - c * 0.3), cy, math.floor(c * 0.6), w, black)
+        elseif f == 3 then -- water column
+            fill_polygon(bb, { { cx - c * 0.12, cy }, { cx + c * 0.12, cy }, { cx + c * 0.18, cy - c * 0.7 },
+                { cx, cy - c * 0.85 }, { cx - c * 0.18, cy - c * 0.7 } }, black)
+            ring(bb, cx, cy, c * 0.3, w, black)
+            for _i, d in ipairs({ { -0.35, -0.75 }, { 0.32, -0.8 }, { -0.25, -0.95 }, { 0.2, -1.0 } }) do
+                disc(bb, cx + d[1] * c, cy + d[2] * c, c / 20, black)
+            end
+        elseif f == 4 then -- the column falls back
+            ring(bb, cx, cy, c * 0.45, w * 1.5, black)
+            disc(bb, cx, cy, c * 0.14, black)
+            for _i, d in ipairs({ { -0.5, -0.3 }, { 0.5, -0.25 }, { -0.2, -0.45 }, { 0.25, -0.5 } }) do
+                disc(bb, cx + d[1] * c, cy + d[2] * c, c / 20, black)
+            end
+        elseif f == 5 then -- ripples
+            ring(bb, cx, cy, c * 0.75, w, black)
+            ring(bb, cx, cy, c * 0.35, w * 0.7, black)
+        else -- fading ripples
+            for _i, r in ipairs({ { 1.0, 24 }, { 0.6, 14 } }) do
+                for i = 0, r[2] - 1 do
+                    local a = 2 * math.pi * i / r[2]
+                    disc(bb, cx + r[1] * c * math.cos(a), cy + r[1] * c * math.sin(a), c / 30, black)
+                end
             end
         end
         return
     end
-    -- hit / sunk: a blast that flares up and breaks into debris
-    if frame == 1 then
-        blast(bb, cx, cy, c * 0.28, black)
-    elseif frame == 2 then
-        blast(bb, cx, cy, c * 0.5, black, math.pi / 8)
-        blast(bb, cx, cy, c * 0.24, white)
-    elseif frame == 3 then
-        blast(bb, cx, cy, c * 0.22, black, math.pi / 8)
-        for i = 0, 5 do
-            local a = i * math.pi / 3
-            disc(bb, cx + c * 0.38 * math.cos(a), cy + c * 0.38 * math.sin(a), c * 0.06, black)
+
+    if anim.kind == "hit" then
+        local cx, cy = center(anim.cells[1])
+        if f == 1 then
+            shell(cx, cy)
+        elseif f == 2 then
+            flash()
+            blast(bb, cx, cy, c * 1.1, white, 0, 12)
+        elseif f == 3 then -- fireball over the neighbours
+            blast(bb, cx, cy, c * 0.95, black, math.pi / 8, 10)
+            blast(bb, cx, cy, c * 0.5, white, 0, 10)
+            blast(bb, cx, cy, c * 0.22, black)
+        elseif f == 4 then -- debris flying out
+            blast(bb, cx, cy, c * 0.45, black, math.pi / 8)
+            for i = 0, 7 do
+                local a = i * math.pi / 4 + 0.3
+                local r = c * (0.7 + (i % 3) * 0.15)
+                local x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+                fill_polygon(bb, { { x - c * 0.07, y - c * 0.05 }, { x + c * 0.08, y - c * 0.02 }, { x + c * 0.02, y + c * 0.08 } }, black)
+            end
+        else -- smoke rising over the fire
+            flame(bb, cx, cy, c * 0.75)
+            puff(bb, cx - c * 0.1, cy - c * 0.6, c * 0.28, w)
+            puff(bb, cx + c * 0.17, cy - c * 0.95, c * 0.2, w)
         end
-    else -- sunk: shock wave
-        ring(bb, cx, cy, c * 0.46, c / 12, black)
-        disc(bb, cx, cy, c * 0.12, black)
+        return
+    end
+
+    -- sunk: blasts run along the ship, it blows up, sinks below the waves
+    local n = #anim.cells
+    local steps = math.min(n, SINK_STEPS)
+    if f <= steps then
+        for i, cell in ipairs(anim.cells) do
+            local step = math.ceil(i * steps / n)
+            local cx, cy = center(cell)
+            if step == f then
+                blast(bb, cx, cy, c * 0.85, black, math.pi / 8, 10)
+                blast(bb, cx, cy, c * 0.35, white)
+            elseif step < f then
+                flame(bb, cx, cy, c * 0.65)
+            end
+        end
+    elseif f == steps + 1 then
+        flash()
+        for i, cell in ipairs(anim.cells) do
+            local cx, cy = center(cell)
+            blast(bb, cx, cy, c * 0.75, white, i * 0.4, 10)
+        end
+    else
+        local sink = f == steps + 2 and 0.35 or 0.75
+        local m = self.inset
+        -- the ship broke up: each row goes down as one piece (joined only along the row)
+        local s = c - 2 * m
+        for _i, cell in ipairs(anim.cells) do
+            local px, py = ox + cell[1] * c, oy + cell[2] * c
+            bb:paintRoundedRect(px + m, py + m, s, s, black, math.floor(s / 2))
+            if Board.covers(anim.ship, cell[1] + 1, cell[2]) then
+                bb:paintRect(px + half, py + m, c - half + m + line, s, black)
+            end
+            if Board.covers(anim.ship, cell[1] - 1, cell[2]) then bb:paintRect(px, py + m, half + 1, s, black) end
+        end
+        local amp = math.max(1, math.floor(c / 30))
+        for _i, cell in ipairs(anim.cells) do
+            local px, py = ox + cell[1] * c, oy + cell[2] * c
+            local wy = py + m + math.floor((c - 2 * m) * (1 - sink))
+            local lx = cell[1] == 0 and 2 * line or line
+            bb:paintRect(px + lx, wy, c - lx, py + c - wy, white) -- under water
+            bb:paintRect(px, wy, lx, py + c - wy, black) -- the grid line the hull covered
+            for xx = px + lx, px + c - 1 do -- waves along the water line
+                local yy = wy + math.floor(amp * math.sin((xx - ox) / c * 6 * math.pi) + 0.5)
+                bb:paintRect(xx, yy - 1, 1, math.max(2, line + 1), black)
+            end
+        end
+        local first = anim.cells[1]
+        local cx, cy = center(first)
+        if f == steps + 2 then
+            puff(bb, cx + c * 0.3, cy - c * 0.7, c * 0.3, w)
+        else -- bubbles
+            for i, cell in ipairs(anim.cells) do
+                local bx, by = center(cell)
+                ring(bb, bx + (i % 3 - 1) * c * 0.2, by - c * (0.25 + (i % 2) * 0.3), c * (0.06 + (i % 3) * 0.02), w * 0.6, black)
+            end
+        end
     end
 end
 
@@ -327,9 +477,12 @@ function BoardWidget:paintCell(bb, px, py, x, y)
         disc(bb, cx, cy, c / 10, Blitbuffer.COLOR_BLACK)
         ring(bb, cx, cy, c * 0.27, math.max(1, c / 30), Blitbuffer.COLOR_GRAY_9)
     end
-    local function fire(color) blast(bb, cx, cy, c * 0.42, color) end
+    local function fire() flame(bb, cx, cy, c * 0.75) end
     local function wreck() blast(bb, cx, cy, c * 0.2, Blitbuffer.COLOR_WHITE) end
     local animated = self.anim and self.anim.set[y * Board.SIZE + x]
+    -- a sunk ship's hull is gone once it blows up (paintAnim draws what is left)
+    local gone = animated and self.anim.kind == "sunk"
+        and self.anim.frame > math.min(#self.anim.cells, SINK_STEPS)
 
     if self.mode == "own" then
         if self.blocked and self.blocked[y][x] then fill(Blitbuffer.COLOR_GRAY_D) end
@@ -338,7 +491,7 @@ function BoardWidget:paintCell(bb, px, py, x, y)
         if i then
             local ship = self.board.ships[i]
             if animated then
-                self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_GRAY)
+                if not gone then self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_GRAY) end
             elseif self.board:sunk(i) then
                 self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_BLACK)
                 wreck()
@@ -347,7 +500,7 @@ function BoardWidget:paintCell(bb, px, py, x, y)
                 self:paintHull(bb, px, py, x, y, ship,
                     selected and Blitbuffer.COLOR_GRAY_4 or Blitbuffer.COLOR_GRAY,
                     shot ~= "hit" and (selected and Blitbuffer.COLOR_GRAY_E or Blitbuffer.COLOR_GRAY_5) or nil)
-                if shot == "hit" then fire(Blitbuffer.COLOR_BLACK) end
+                if shot == "hit" then fire() end
             end
         elseif shot == "miss" and not animated then
             splash()
@@ -355,8 +508,12 @@ function BoardWidget:paintCell(bb, px, py, x, y)
     else
         local mark = self.target.marks[y][x]
         local i = self.target:ship_at(x, y)
-        if animated then
-            if self.anim.kind == "sunk" then fill(Blitbuffer.COLOR_GRAY_D) end
+        if animated then -- as before the shot: the ship goes down during the animation
+            if self.anim.kind == "sunk" and self.anim.ship and not gone then
+                self:paintHull(bb, px, py, x, y, self.anim.ship, Blitbuffer.COLOR_GRAY)
+            elseif self.anim.kind == "hit" then
+                fill(Blitbuffer.COLOR_GRAY_D)
+            end
         elseif mark == "sunk" and i then
             self:paintHull(bb, px, py, x, y, self.target.ships[i], Blitbuffer.COLOR_BLACK)
             wreck()
@@ -367,12 +524,11 @@ function BoardWidget:paintCell(bb, px, py, x, y)
             elseif mark == "hit" then
                 fill(Blitbuffer.COLOR_GRAY_D)
             end
-            if mark == "hit" then fire(Blitbuffer.COLOR_BLACK)
+            if mark == "hit" then fire()
             elseif mark == "miss" then splash()
             elseif mark == "near" then disc(bb, cx, cy, c / 14, Blitbuffer.COLOR_GRAY_9) end
         end
     end
-    if animated then self:paintFrame(bb, px, py, self.anim.kind, self.anim.frame) end
 end
 
 function BoardWidget:paintTo(bb, x, y)
@@ -397,6 +553,7 @@ function BoardWidget:paintTo(bb, x, y)
         bb:paintBorder(ox + self.last[1] * c, oy + self.last[2] * c, c + self.line, c + self.line,
             math.max(2, math.floor(c / 8)), Blitbuffer.COLOR_BLACK)
     end
+    if self.anim then self:paintAnim(bb, ox, oy) end
 end
 
 function BoardWidget:onCloseWidget()
@@ -411,17 +568,19 @@ end
 local GameScreen = InputContainer:extend{
     covers_fullscreen = true,
     selected = nil, -- ship being moved while placing
-    anim = nil, -- running animation: { board = "own" | "target", kind, cells, set, frame, frames }
+    anim = nil, -- running animation: { board = "own" | "target", kind, cells, set, ship, frame, frames }
 }
 
---- Plays an animation (kind: see FRAMES) on squares of the "own" or "target" board.
--- Frame 1 is painted with the next update(), the rest every FRAME_TIME with a
--- fast refresh of just those squares; a normal refresh cleans up at the end.
-function GameScreen:animate(board, kind, cells)
+--- Plays an animation ("miss", "hit" or "sunk" with its ship) on squares of the
+-- "own" or "target" board. Frame 1 is painted with the next update(), the rest
+-- every FRAME_TIME with a fast refresh of just those squares and their
+-- neighbours; a normal refresh cleans up at the end.
+function GameScreen:animate(board, kind, cells, ship)
     self:stopAnimation()
     local set = {}
     for _i, c in ipairs(cells) do set[c[2] * Board.SIZE + c[1]] = true end
-    self.anim = { board = board, kind = kind, cells = cells, set = set, frame = 1, frames = FRAMES[kind] }
+    self.anim = { board = board, kind = kind, cells = cells, set = set, ship = ship, frame = 1,
+        frames = frame_count(kind, cells) }
     self.anim_step = function() self:animationStep() end
     UIManager:scheduleIn(FRAME_TIME, self.anim_step)
 end
@@ -451,13 +610,15 @@ function GameScreen:animateShot(board, ev)
     if not game.animations then return end
     local m = game.match
     local kind = ev.result == "miss" and "miss" or ev.result == "hit" and "hit" or "sunk"
-    local cells = { { ev.x, ev.y } }
+    local cells, ship = { { ev.x, ev.y } }, nil
     if kind == "sunk" then
         local where = board == "target" and m.target or m.board
         local i = where:ship_at(ev.x, ev.y)
-        if i then cells = Board.cells(where.ships[i]) end
+        if not i then return end
+        ship = where.ships[i]
+        cells = Board.cells(ship)
     end
-    self:animate(board, kind, cells)
+    self:animate(board, kind, cells, ship)
 end
 
 function GameScreen:onCloseWidget()
@@ -830,8 +991,6 @@ function Battleships:hostGame(fleet)
         end
         local rules = host_rules(Protocol.PORT)
         kindle_firewall("-A", rules)
-        self.settings:saveSetting("fleet", fleet)
-        self.settings:flush()
         self:startGame("host", { host = host, ip = Net.local_ip(socket), rules = rules, fleet = fleet })
     end)
 end
@@ -1027,9 +1186,6 @@ function Battleships:mainMenu()
                 table.insert(items, {
                     text = FLEET_NAMES[fleet],
                     battleshipswifi_item = "host_" .. fleet,
-                    checked_func = function()
-                        return (self.settings:readSetting("fleet") or Board.DEFAULT_FLEET) == fleet
-                    end,
                     callback = function() self:hostGame(fleet) end,
                 })
             end

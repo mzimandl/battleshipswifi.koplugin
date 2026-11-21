@@ -222,7 +222,7 @@ end
 eq(item("name").text_func(), "Your name: Kindle Test", "default name is the device model")
 local host_items = item("host").sub_item_table_func()
 eq(host_items[1].text .. "|" .. host_items[2].text, "Classic ships|Shaped ships", "host picks the fleet")
-eq(host_items[1].checked_func() and not host_items[2].checked_func(), true, "classic by default")
+eq(host_items[1].checked_func == nil and host_items[2].checked_func == nil, true, "plain items, not radio buttons")
 item("name").callback({ updateItems = function() end })
 dialogs[#dialogs].text_value = "  Martin\n "
 dialogs[#dialogs].buttons[1][2].callback()
@@ -316,9 +316,11 @@ eq(screen.anim and screen.anim.kind, "hit", "hit animated")
 eq(boards(screen)[1].anim, screen.anim, "on the opponent's board")
 paint(boards(screen)[1])
 dirty = {}
-eq(run_tasks(), 3, "two more frames and the cleanup")
-eq(dirty[1].kind .. " " .. dirty[2].kind .. " " .. dirty[3].kind, "fast fast ui", "fast refreshes, then a normal one")
-eq(dirty[1].region.w, boards(screen)[1].cell + boards(screen)[1].line, "only the square is refreshed")
+eq(run_tasks(), 5, "four more frames and the cleanup")
+local kinds = {}
+for _i, d in ipairs(dirty) do kinds[#kinds + 1] = d.kind end
+eq(table.concat(kinds, " "), "fast fast fast fast ui", "fast refreshes, then a normal one")
+eq(dirty[1].region.w, 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line, "only the square and its neighbours are refreshed")
 eq(screen.anim, nil, "animation over")
 eq(boards(screen)[1].anim, nil, "board drawn as usual")
 -- a sunk ship: every square blasts
@@ -327,7 +329,7 @@ client.incoming = { "RESULT 4 4 sunk 3,4,line2,0\n" }
 tick()
 eq(screen.anim and screen.anim.kind .. #screen.anim.cells, "sunk2", "sunk ship animated on all its squares")
 paint(boards(screen)[1])
-eq(run_tasks(), 4, "sunk: three more frames and the cleanup")
+eq(run_tasks(), 5, "sunk (2 squares): blasts in 2 steps, blow-up, 2 sinking frames, cleanup")
 -- animations off
 item("animations").callback()
 eq(item("animations").checked_func(), false, "animations switched off")

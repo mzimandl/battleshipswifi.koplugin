@@ -9,7 +9,7 @@ Both devices must be on the same Wi-Fi network. In the menu: **Tools → Battles
 - **Find a game**: the other player sees games open on the local network (UDP broadcast), with their fleet, and taps one to join.
 - **Join by address…**: when the search finds nothing (some networks block broadcasts), type the address shown on the host's screen, e.g. `192.168.1.10` (or `192.168.1.10:7531`).
 - **Your name**: shown to the other player and in the list of games (default: the device model).
-- **Animations**: short explosions and splashes after each shot (on by default). Each frame is a fast partial refresh of the squares hit; turn them off on slow screens.
+- **Animations** (on by default), on both boards: a miss is a shell, a splash, a water column and spreading ripples (about 0.9 s); a hit is a shell, a flash, a fireball, flying debris and smoke over the fire (0.75 s); a sunk ship blows up square by square, then all at once, breaks up and goes down under the waves (up to about 1 s). Each frame is a fast refresh of the squares and their neighbours; turn them off on slow screens.
 
 ### Rules
 - The host picks the fleet, on a 10 × 10 board:
@@ -27,7 +27,7 @@ Both devices must be on the same Wi-Fi network. In the menu: **Tools → Battles
 - The host's device picks who fires first. After a hit you fire again; after a miss it's the opponent's turn.
 - Water around a sunk ship is marked automatically. Whoever sinks the whole enemy fleet first wins; the loser then sees the winner's remaining ships. **Play again** starts a new round once both players tap it.
 
-Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, black blast = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined.
+Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined.
 
 ## Network
 - TCP 7531 (the game, host), UDP 7532 (host answers searches), UDP 7533 (searching device listens for answers).
