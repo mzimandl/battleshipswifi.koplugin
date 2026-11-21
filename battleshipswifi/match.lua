@@ -9,7 +9,7 @@ ship lets the shooter fire again; a miss passes the turn.
 
 receive() and the local actions return an event table for the UI (or nil when
 nothing visible changed); on a protocol error receive() returns nil, error.
-Events: joined, peer_ready, start, incoming (opponent's shot), result (ours),
+Events: joined (fleet_changed when the guest had to take the host's fleet), peer_ready, start, incoming (opponent's shot), result (ours),
 fleet, rematch_request, rematch, left.
 ]]
 
@@ -21,10 +21,12 @@ local M = {}
 local Match = {}
 Match.__index = Match
 
---- opts: role = "host" | "guest", name, send(line), rand (math.random)
+--- opts: role = "host" | "guest", name, send(line), rand (math.random),
+-- fleet (a key of Board.FLEETS; the host's choice, the guest learns it from WELCOME)
 function M.new(opts)
     local m = setmetatable({
         role = opts.role,
+        fleet = Board.FLEETS[opts.fleet or ""] and opts.fleet or Board.DEFAULT_FLEET,
         name = Protocol.clean_name(opts.name),
         send_line = opts.send,
         rand = opts.rand or math.random,
@@ -35,7 +37,7 @@ end
 
 function Match:reset()
     self.phase = "placing"
-    self.board = Board.new()
+    self.board = Board.new(self.fleet)
     self.board:randomize(self.rand)
     self.target = Board.target()
     self.ready, self.peer_ready = false, false
@@ -124,7 +126,7 @@ function handlers:HELLO(words, rest)
         return nil, "version"
     end
     self.peer = Protocol.clean_name(rest:match("^%S+%s*(.*)$"))
-    self:send("WELCOME", Protocol.VERSION, self.name)
+    self:send("WELCOME", Protocol.VERSION, self.fleet, self.name)
     if self.ready then self:send("READY") end
     return { type = "joined", name = self.peer }
 end
@@ -132,9 +134,17 @@ end
 function handlers:WELCOME(words, rest)
     if self.role ~= "guest" or self.peer then return nil, "unexpected WELCOME" end
     if tonumber(words[1]) ~= Protocol.VERSION then return nil, "version" end
-    self.peer = Protocol.clean_name(rest:match("^%S+%s*(.*)$"))
+    local fleet = words[2]
+    if not Board.FLEETS[fleet or ""] then return nil, "bad WELCOME" end
+    self.peer = Protocol.clean_name(rest:match("^%S+%s+%S+%s*(.*)$"))
+    local changed = fleet ~= self.fleet
+    if changed then
+        -- the host plays another fleet: place that one
+        self.fleet = fleet
+        self:reset()
+    end
     if self.ready then self:send("READY") end
-    return { type = "joined", name = self.peer }
+    return { type = "joined", name = self.peer, fleet_changed = changed }
 end
 
 function handlers:ERROR(words)

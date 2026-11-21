@@ -110,15 +110,15 @@ function Host:accept()
     return client
 end
 
---- Answers discovery requests with our name (only when `name` is given, i.e.
--- while waiting for an opponent).
-function Host:answer(name)
+--- Answers discovery requests with our fleet and name (only when `name` is
+-- given, i.e. while waiting for an opponent).
+function Host:answer(name, fleet)
     if not self.udp then return end
     while true do
         local msg, ip, port = self.udp:receivefrom()
         if not msg then break end
         if name and Protocol.is_discover(msg) then
-            self.udp:sendto(Protocol.announce(self.port, name), ip, port)
+            self.udp:sendto(Protocol.announce(self.port, fleet or "classic", name), ip, port)
         end
     end
 end
@@ -134,7 +134,7 @@ local Search = {}
 Search.__index = Search
 
 --- Broadcasts DISCOVER (send(now) every second or so) and collects answers in
--- `games` (list of { ip, port, name, seen }).
+-- `games` (list of { ip, port, fleet, name, seen }).
 function M.search(socket, local_ip)
     local udp = socket.udp()
     if not udp then return nil, "udp" end
@@ -167,10 +167,10 @@ function Search:poll(now)
                 if g.ip == ip and g.port == game.port then found = g end
             end
             if found then
-                if found.name ~= game.name then changed = true end
-                found.name, found.seen = game.name, now
+                if found.name ~= game.name or found.fleet ~= game.fleet then changed = true end
+                found.name, found.fleet, found.seen = game.name, game.fleet, now
             else
-                table.insert(self.games, { ip = ip, port = game.port, name = game.name, seen = now })
+                table.insert(self.games, { ip = ip, port = game.port, fleet = game.fleet, name = game.name, seen = now })
                 changed = true
             end
         end

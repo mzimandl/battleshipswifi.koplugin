@@ -3,18 +3,21 @@ Wire format. Pure Lua: no KOReader modules.
 
 TCP: one message per line ("\n"), words separated by spaces. A player name is
 the rest of its line. Guest → host first: HELLO <version> <name>; the host
-answers WELCOME <version> <name>, or ERROR <reason> and closes.
+answers WELCOME <version> <fleet> <name>, or ERROR <reason> and closes.
+<fleet> is a key of Board.FLEETS ("classic", "shapes"): the host picks it.
 Then both sides: READY, START host|guest (host only), SHOT x y,
 RESULT x y miss|hit|sunk|won [ship], FLEET [ship ...], REMATCH, PING, BYE.
-A ship is "x,y,len,dir" (see board.lua).
+A ship is "x,y,shape,rot" (see board.lua).
 
 UDP discovery: a guest sends DISCOVER <version> to the broadcast address,
-the host waiting for an opponent answers GAME <version> <tcp port> <name>.
+the host waiting for an opponent answers GAME <version> <tcp port> <fleet> <name>.
+
+Version 1 (until 0.2.x): ships "x,y,len,dir", no <fleet>.
 ]]
 
 local M = {}
 
-M.VERSION = 1
+M.VERSION = 2
 M.PORT = 7531           -- TCP, host
 M.DISCOVERY_PORT = 7532 -- UDP, host listens
 M.SEARCH_PORT = 7533    -- UDP, guest listens for answers
@@ -91,15 +94,15 @@ function M.discover()
     return "DISCOVER " .. M.VERSION
 end
 
-function M.announce(port, name)
-    return string.format("GAME %d %d %s", M.VERSION, port, M.clean_name(name))
+function M.announce(port, fleet, name)
+    return string.format("GAME %d %d %s %s", M.VERSION, port, fleet, M.clean_name(name))
 end
 
---- An answer to DISCOVER: { port, name }, or nil for anything else.
+--- An answer to DISCOVER: { port, fleet, name }, or nil for anything else.
 function M.parse_announce(msg)
-    local version, port, name = (msg or ""):match("^GAME (%d+) (%d+) ?(.-)%s*$")
+    local version, port, fleet, name = (msg or ""):match("^GAME (%d+) (%d+) (%l+) ?(.-)%s*$")
     if not version or tonumber(version) ~= M.VERSION then return nil end
-    return { port = tonumber(port), name = M.clean_name(name) }
+    return { port = tonumber(port), fleet = fleet, name = M.clean_name(name) }
 end
 
 function M.is_discover(msg)

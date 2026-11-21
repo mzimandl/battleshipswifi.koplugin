@@ -63,6 +63,11 @@ local CONNECT_TIMEOUT = 5  -- seconds, blocks the UI
 local SEARCH_INTERVAL = 1  -- seconds between DISCOVER broadcasts
 local SEARCH_EXPIRE = 5    -- seconds: games not heard of are dropped from the list
 
+local FLEET_NAMES = {
+    classic = _("Classic ships"),
+    shapes = _("Shaped ships"),
+}
+
 local function now()
     return time.to_s(time.now())
 end
@@ -73,7 +78,7 @@ end
 
 -- The running game and the game search. Module-level, not on the plugin
 -- instance: KOReader makes a new instance for every reader/file manager.
--- game: { role, match, conn, host, ip, screen, zmq, message, lost, last_ping, rules }
+-- game: { role, match, conn, host, ip, screen, zmq, message, lost, last_ping, rules, animations }
 local game = {}
 -- finder: { search, menu, zmq, last_sent, rules }
 local finder = {}
@@ -124,10 +129,67 @@ end
 
 local font_sizes = {} -- cell size → label font size
 
+-- Drawing helpers ----------------------------------------------------------------
+
+--- Fills a polygon (list of { x, y }, even-odd rule) row by row.
+local function fill_polygon(bb, pts, color)
+    local min_y, max_y = math.huge, -math.huge
+    for _i, p in ipairs(pts) do
+        min_y, max_y = math.min(min_y, p[2]), math.max(max_y, p[2])
+    end
+    local n = #pts
+    for y = math.floor(min_y), math.ceil(max_y) - 1 do
+        local yc = y + 0.5
+        local xs = {}
+        for i = 1, n do
+            local a, b = pts[i], pts[i % n + 1]
+            if (a[2] <= yc) ~= (b[2] <= yc) then
+                xs[#xs + 1] = a[1] + (yc - a[2]) / (b[2] - a[2]) * (b[1] - a[1])
+            end
+        end
+        table.sort(xs)
+        for i = 1, #xs - 1, 2 do
+            local x0, x1 = math.floor(xs[i] + 0.5), math.floor(xs[i + 1] + 0.5)
+            if x1 > x0 then bb:paintRect(x0, y, x1 - x0, 1, color) end
+        end
+    end
+end
+
+--- An explosion: a star with uneven spikes around (cx, cy), radius r.
+local function blast(bb, cx, cy, r, color, phase)
+    local pts, spikes = {}, 8
+    phase = phase or 0
+    for i = 0, 2 * spikes - 1 do
+        local k
+        if i % 2 == 1 then k = 0.45
+        elseif i % 4 == 0 then k = 1
+        else k = 0.72 end
+        local a = phase + math.pi * i / spikes
+        pts[#pts + 1] = { cx + r * k * math.sin(a), cy - r * k * math.cos(a) }
+    end
+    fill_polygon(bb, pts, color)
+end
+
+local function disc(bb, cx, cy, r, color)
+    r = math.max(1, math.floor(r))
+    bb:paintCircle(cx, cy, r, color)
+end
+
+local function ring(bb, cx, cy, r, w, color)
+    r = math.max(1, math.floor(r))
+    bb:paintCircle(cx, cy, r, color, math.max(1, math.min(r, math.floor(w))))
+end
+
+-- Animation frames: how many of each kind (frame 1 is shown with the result).
+local FRAMES = { miss = 3, hit = 3, sunk = 4 }
+local FRAME_TIME = 0.15 -- seconds
+
 --- A 10 × 10 board with column letters and row numbers.
 -- mode "own": board = Board (our ships and the opponent's shots), selected = ship index
 -- (squares it can't be moved to are shaded);
 -- mode "target": target = Board.target(). last = { x, y } is outlined.
+-- anim = { kind = "miss" | "hit" | "sunk", set = { [y * SIZE + x] = true }, frame }
+-- is drawn on its squares (see GameScreen:animate()).
 -- on_tap(x, y) makes it tappable.
 local BoardWidget = InputContainer:extend{
     size = nil,
@@ -136,6 +198,7 @@ local BoardWidget = InputContainer:extend{
     target = nil,
     selected = nil,
     last = nil,
+    anim = nil,
     on_tap = nil,
 }
 
@@ -144,6 +207,7 @@ function BoardWidget:init()
     self.cell = math.floor(self.size / n)
     self.dimen = Geom:new{ x = 0, y = 0, w = self.cell * n, h = self.cell * n }
     self.line = math.max(1, math.floor(self.cell / 25))
+    self.inset = math.max(self.line + 1, math.floor(self.cell * 0.14))
     self.blocked = self.mode == "own" and self.selected and self.board:blocked(self.selected) or nil
     local fs = font_sizes[self.cell]
     if not fs then
@@ -174,46 +238,141 @@ function BoardWidget:onTapBoard(_args, ges)
     return true
 end
 
+--- Screen rectangle around the given squares (list of { x, y }).
+function BoardWidget:region(cells)
+    local c = self.cell
+    local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+    for _i, cell in ipairs(cells) do
+        x0, y0 = math.min(x0, cell[1]), math.min(y0, cell[2])
+        x1, y1 = math.max(x1, cell[1]), math.max(y1, cell[2])
+    end
+    return Geom:new{
+        x = self.dimen.x + c * (x0 + 1), y = self.dimen.y + c * (y0 + 1),
+        w = c * (x1 - x0 + 1) + self.line, h = c * (y1 - y0 + 1) + self.line,
+    }
+end
+
 local function paint_centered(bb, widget, x, y, w, h)
     local size = widget:getSize()
     widget:paintTo(bb, x + math.floor((w - size.w) / 2), y + math.floor((h - size.h) / 2))
 end
 
-function BoardWidget:paintCell(bb, px, py, x, y)
+--- One square of a ship's hull: a rounded body joined to the ship's
+-- neighbouring squares, so the whole ship reads as one silhouette.
+function BoardWidget:paintHull(bb, px, py, x, y, ship, color, deck)
+    local c, m, line = self.cell, self.inset, self.line
+    local s = c - 2 * m
+    local half = math.floor(c / 2)
+    bb:paintRoundedRect(px + m, py + m, s, s, color, math.floor(s / 2))
+    local right, down = Board.covers(ship, x + 1, y), Board.covers(ship, x, y + 1)
+    if right then bb:paintRect(px + half, py + m, c - half + m + line, s, color) end
+    if Board.covers(ship, x - 1, y) then bb:paintRect(px, py + m, half + 1, s, color) end
+    if down then bb:paintRect(px + m, py + half, s, c - half + m + line, color) end
+    if Board.covers(ship, x, y - 1) then bb:paintRect(px + m, py, s, half + 1, color) end
+    if right and down and Board.covers(ship, x + 1, y + 1) then
+        bb:paintRect(px + c - m, py + c - m, 2 * m + line, 2 * m + line, color) -- inner corner of a block
+    end
+    if deck then -- a gun turret
+        ring(bb, px + half, py + half, c * 0.15, math.max(1, c / 22), deck)
+    end
+end
+
+--- Animation frame on a square.
+function BoardWidget:paintFrame(bb, px, py, kind, frame)
     local c = self.cell
-    local function fill(color) bb:paintRect(px, py, c, c, color) end
-    local function square(color)
-        local s = math.floor(c * 0.5)
-        bb:paintRect(px + math.floor((c - s) / 2), py + math.floor((c - s) / 2), s, s, color)
+    local cx, cy = px + math.floor(c / 2), py + math.floor(c / 2)
+    local black, white = Blitbuffer.COLOR_BLACK, Blitbuffer.COLOR_WHITE
+    if kind == "miss" then -- a splash spreading in rings
+        if frame == 1 then
+            disc(bb, cx, cy, c * 0.16, black)
+        elseif frame == 2 then
+            ring(bb, cx, cy, c * 0.3, c / 10, black)
+            disc(bb, cx, cy, c * 0.08, black)
+        else
+            ring(bb, cx, cy, c * 0.44, c / 16, black)
+            for i = 0, 3 do
+                local a = math.pi / 4 + i * math.pi / 2
+                disc(bb, cx + c * 0.26 * math.cos(a), cy + c * 0.26 * math.sin(a), c * 0.05, black)
+            end
+        end
+        return
     end
-    local function dot(r, color)
-        bb:paintCircle(px + math.floor(c / 2), py + math.floor(c / 2), math.max(1, math.floor(r)), color)
+    -- hit / sunk: a blast that flares up and breaks into debris
+    if frame == 1 then
+        blast(bb, cx, cy, c * 0.28, black)
+    elseif frame == 2 then
+        blast(bb, cx, cy, c * 0.5, black, math.pi / 8)
+        blast(bb, cx, cy, c * 0.24, white)
+    elseif frame == 3 then
+        blast(bb, cx, cy, c * 0.22, black, math.pi / 8)
+        for i = 0, 5 do
+            local a = i * math.pi / 3
+            disc(bb, cx + c * 0.38 * math.cos(a), cy + c * 0.38 * math.sin(a), c * 0.06, black)
+        end
+    else -- sunk: shock wave
+        ring(bb, cx, cy, c * 0.46, c / 12, black)
+        disc(bb, cx, cy, c * 0.12, black)
     end
+end
+
+function BoardWidget:paintCell(bb, px, py, x, y)
+    local c, line = self.cell, self.line
+    local half = math.floor(c / 2)
+    local cx, cy = px + half, py + half
+    local function fill(color) -- the square inside the grid lines (the outer ones are thicker)
+        local lx, ly = x == 0 and 2 * line or line, y == 0 and 2 * line or line
+        bb:paintRect(px + lx, py + ly, c - lx, c - ly, color)
+    end
+    local function splash()
+        disc(bb, cx, cy, c / 10, Blitbuffer.COLOR_BLACK)
+        ring(bb, cx, cy, c * 0.27, math.max(1, c / 30), Blitbuffer.COLOR_GRAY_9)
+    end
+    local function fire(color) blast(bb, cx, cy, c * 0.42, color) end
+    local function wreck() blast(bb, cx, cy, c * 0.2, Blitbuffer.COLOR_WHITE) end
+    local animated = self.anim and self.anim.set[y * Board.SIZE + x]
+
     if self.mode == "own" then
         if self.blocked and self.blocked[y][x] then fill(Blitbuffer.COLOR_GRAY_D) end
         local i = self.board:ship_at(x, y)
         local shot = self.board.shots[y][x]
         if i then
             local ship = self.board.ships[i]
-            if ship.hits >= ship.len then fill(Blitbuffer.COLOR_BLACK)
+            if animated then
+                self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_GRAY)
+            elseif self.board:sunk(i) then
+                self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_BLACK)
+                wreck()
             else
-                fill(i == self.selected and Blitbuffer.COLOR_GRAY_4 or Blitbuffer.COLOR_GRAY)
-                if shot == "hit" then square(Blitbuffer.COLOR_BLACK) end
+                local selected = i == self.selected
+                self:paintHull(bb, px, py, x, y, ship,
+                    selected and Blitbuffer.COLOR_GRAY_4 or Blitbuffer.COLOR_GRAY,
+                    shot ~= "hit" and (selected and Blitbuffer.COLOR_GRAY_E or Blitbuffer.COLOR_GRAY_5) or nil)
+                if shot == "hit" then fire(Blitbuffer.COLOR_BLACK) end
             end
-        elseif shot == "miss" then
-            dot(c / 8, Blitbuffer.COLOR_BLACK)
+        elseif shot == "miss" and not animated then
+            splash()
         end
-        return
+    else
+        local mark = self.target.marks[y][x]
+        local i = self.target:ship_at(x, y)
+        if animated then
+            if self.anim.kind == "sunk" then fill(Blitbuffer.COLOR_GRAY_D) end
+        elseif mark == "sunk" and i then
+            self:paintHull(bb, px, py, x, y, self.target.ships[i], Blitbuffer.COLOR_BLACK)
+            wreck()
+        else
+            if i then -- revealed after the game
+                self:paintHull(bb, px, py, x, y, self.target.ships[i], Blitbuffer.COLOR_GRAY,
+                    mark ~= "hit" and Blitbuffer.COLOR_GRAY_5 or nil)
+            elseif mark == "hit" then
+                fill(Blitbuffer.COLOR_GRAY_D)
+            end
+            if mark == "hit" then fire(Blitbuffer.COLOR_BLACK)
+            elseif mark == "miss" then splash()
+            elseif mark == "near" then disc(bb, cx, cy, c / 14, Blitbuffer.COLOR_GRAY_9) end
+        end
     end
-    local mark = self.target.marks[y][x]
-    if mark == "sunk" then
-        fill(Blitbuffer.COLOR_BLACK)
-        return
-    end
-    if self.target:ship_at(x, y) then fill(Blitbuffer.COLOR_GRAY) end -- revealed after the game
-    if mark == "hit" then square(Blitbuffer.COLOR_BLACK)
-    elseif mark == "miss" then dot(c / 8, Blitbuffer.COLOR_BLACK)
-    elseif mark == "near" then dot(c / 14, Blitbuffer.COLOR_GRAY_9) end
+    if animated then self:paintFrame(bb, px, py, self.anim.kind, self.anim.frame) end
 end
 
 function BoardWidget:paintTo(bb, x, y)
@@ -225,13 +384,14 @@ function BoardWidget:paintTo(bb, x, y)
         paint_centered(bb, self.rows[i], x, y + c * (i + 1), c, c)
     end
     local ox, oy = x + c, y + c
-    for cy = 0, n - 1 do
-        for cx = 0, n - 1 do self:paintCell(bb, ox + cx * c, oy + cy * c, cx, cy) end
-    end
+    -- grid first: ships are painted across the lines between their squares
     for i = 0, n do
         local w = (i == 0 or i == n) and self.line * 2 or self.line
         bb:paintRect(ox + i * c, oy, w, n * c + w, Blitbuffer.COLOR_BLACK)
         bb:paintRect(ox, oy + i * c, n * c + w, w, Blitbuffer.COLOR_BLACK)
+    end
+    for cy = 0, n - 1 do
+        for cx = 0, n - 1 do self:paintCell(bb, ox + cx * c, oy + cy * c, cx, cy) end
     end
     if self.last then
         bb:paintBorder(ox + self.last[1] * c, oy + self.last[2] * c, c + self.line, c + self.line,
@@ -251,7 +411,58 @@ end
 local GameScreen = InputContainer:extend{
     covers_fullscreen = true,
     selected = nil, -- ship being moved while placing
+    anim = nil, -- running animation: { board = "own" | "target", kind, cells, set, frame, frames }
 }
+
+--- Plays an animation (kind: see FRAMES) on squares of the "own" or "target" board.
+-- Frame 1 is painted with the next update(), the rest every FRAME_TIME with a
+-- fast refresh of just those squares; a normal refresh cleans up at the end.
+function GameScreen:animate(board, kind, cells)
+    self:stopAnimation()
+    local set = {}
+    for _i, c in ipairs(cells) do set[c[2] * Board.SIZE + c[1]] = true end
+    self.anim = { board = board, kind = kind, cells = cells, set = set, frame = 1, frames = FRAMES[kind] }
+    self.anim_step = function() self:animationStep() end
+    UIManager:scheduleIn(FRAME_TIME, self.anim_step)
+end
+
+function GameScreen:stopAnimation()
+    if self.anim_step then UIManager:unschedule(self.anim_step) end
+    self.anim, self.anim_step = nil, nil
+end
+
+function GameScreen:animationStep()
+    local anim = self.anim
+    if not anim then return end
+    anim.frame = anim.frame + 1
+    local done = anim.frame > anim.frames
+    local widget = self.board_widgets and self.board_widgets[anim.board]
+    if done then
+        self.anim, self.anim_step = nil, nil
+        if widget then widget.anim = nil end
+    else
+        UIManager:scheduleIn(FRAME_TIME, self.anim_step)
+    end
+    if widget then UIManager:setDirty(self, done and "ui" or "fast", widget:region(anim.cells)) end
+end
+
+--- Animates a shot's result (event "result" on the target board, "incoming" on ours).
+function GameScreen:animateShot(board, ev)
+    if not game.animations then return end
+    local m = game.match
+    local kind = ev.result == "miss" and "miss" or ev.result == "hit" and "hit" or "sunk"
+    local cells = { { ev.x, ev.y } }
+    if kind == "sunk" then
+        local where = board == "target" and m.target or m.board
+        local i = where:ship_at(ev.x, ev.y)
+        if i then cells = Board.cells(where.ships[i]) end
+    end
+    self:animate(board, kind, cells)
+end
+
+function GameScreen:onCloseWidget()
+    self:stopAnimation()
+end
 
 function GameScreen:init()
     self.dimen = Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() }
@@ -383,6 +594,7 @@ function GameScreen:build()
             mode = "own", board = m.board, selected = self.selected,
             on_tap = not m.ready and function(x, y) self:onOwnTap(x, y) end or nil,
         }
+        self.board_widgets = { own = boards }
     else
         local face = Font:getFace("cfont", 16)
         local label_target = TextWidget:new{ text = _("Opponent's board"), face = face }
@@ -398,11 +610,17 @@ function GameScreen:build()
             target_size = math.min(inner_w, math.floor(h2 * 0.6))
             own_size = math.min(inner_w, h2 - target_size)
         end
+        local anim = self.anim
         local target = BoardWidget:new{
             size = target_size, mode = "target", target = m.target, last = m.last_fired,
+            anim = anim and anim.board == "target" and anim or nil,
             on_tap = m.phase == "battle" and not game.lost and function(x, y) self:onTargetTap(x, y) end or nil,
         }
-        local own = BoardWidget:new{ size = own_size, mode = "own", board = m.board, last = m.last_incoming }
+        local own = BoardWidget:new{
+            size = own_size, mode = "own", board = m.board, last = m.last_incoming,
+            anim = anim and anim.board == "own" and anim or nil,
+        }
+        self.board_widgets = { target = target, own = own }
         local group = landscape and HorizontalGroup or VerticalGroup
         boards = group:new{
             align = landscape and "top" or "center",
@@ -517,7 +735,8 @@ function Battleships.onGameEvent(ev)
     local t = ev.type
     if t == "joined" then
         game.message = game.role == "host" and T(_("%1 joined the game."), ev.name)
-            or T(_("You joined %1's game."), ev.name)
+            or T(_("You joined %1's game. Fleet: %2."), ev.name, FLEET_NAMES[m.fleet])
+        if ev.fleet_changed and game.screen then game.screen.selected = nil end
     elseif t == "peer_ready" then
         game.message = T(_("%1 is ready."), m.peer)
     elseif t == "start" then
@@ -525,11 +744,16 @@ function Battleships.onGameEvent(ev)
             or T(_("The battle begins. %1 fires first."), m.peer)
     elseif t == "result" then
         game.message = T(RESULT_TEXT[ev.result], Board.label(ev.x, ev.y))
+        if game.screen then game.screen:animateShot("target", ev) end
     elseif t == "incoming" then
         game.message = T(INCOMING_TEXT[ev.result], m.peer, Board.label(ev.x, ev.y))
+        if game.screen then game.screen:animateShot("own", ev) end
     elseif t == "rematch" then
         game.message = _("New game: place your ships.")
-        if game.screen then game.screen.selected = nil end
+        if game.screen then
+            game.screen.selected = nil
+            game.screen:stopAnimation()
+        end
     elseif t == "left" then
         connection_lost("left")
         return
@@ -551,7 +775,7 @@ local function poll_game()
                 game.last_ping = t
             end
         end
-        game.host:answer(not game.conn and game.match.name or nil)
+        game.host:answer(not game.conn and game.match.name or nil, game.match.fleet)
     end
     local conn = game.conn
     if not conn then return end
@@ -577,12 +801,15 @@ local function poll_game()
     end
 end
 
+--- fields.fleet: the host's choice, or what the guest found in the game list.
 function Battleships:startGame(role, fields)
     game = fields
     game.role = role
+    game.animations = self:animationsOn()
     game.match = Match.new{
         role = role,
         name = self:playerName(),
+        fleet = fields.fleet,
         send = function(line) if game.conn then game.conn:send(line) end end,
     }
     game.last_ping = now()
@@ -592,7 +819,7 @@ function Battleships:startGame(role, fields)
     UIManager:show(game.screen)
 end
 
-function Battleships:hostGame()
+function Battleships:hostGame(fleet)
     NetworkMgr:runWhenOnline(function()
         Battleships.endGame()
         local socket = require("socket")
@@ -603,11 +830,14 @@ function Battleships:hostGame()
         end
         local rules = host_rules(Protocol.PORT)
         kindle_firewall("-A", rules)
-        self:startGame("host", { host = host, ip = Net.local_ip(socket), rules = rules })
+        self.settings:saveSetting("fleet", fleet)
+        self.settings:flush()
+        self:startGame("host", { host = host, ip = Net.local_ip(socket), rules = rules, fleet = fleet })
     end)
 end
 
-function Battleships:joinGame(ip, port)
+--- fleet: the host's, when known from the game list (else WELCOME tells).
+function Battleships:joinGame(ip, port, fleet)
     NetworkMgr:runWhenOnline(function()
         Battleships.endGame()
         local socket = require("socket")
@@ -623,7 +853,7 @@ function Battleships:joinGame(ip, port)
             UIManager:show(InfoMessage:new{ text = T(_("Cannot connect to %1: %2"), ip, tostring(err)) })
             return
         end
-        self:startGame("guest", { conn = conn, rules = rules })
+        self:startGame("guest", { conn = conn, rules = rules, fleet = fleet })
         game.match:hello()
     end)
 end
@@ -667,13 +897,15 @@ end
 function Battleships:finderItems()
     local items = {}
     for _i, g in ipairs(finder.search and finder.search.games or {}) do
+        local fleet = Board.FLEETS[g.fleet or ""] and g.fleet or nil
+        local name = g.name ~= "" and g.name or g.ip
         table.insert(items, {
-            text = g.name ~= "" and g.name or g.ip,
+            text = fleet and T(_("%1 (%2)"), name, FLEET_NAMES[fleet]) or name,
             mandatory = g.ip,
             callback = function()
                 local ip, port = g.ip, g.port
                 UIManager:close(finder.menu)
-                self:joinGame(ip, port)
+                self:joinGame(ip, port, fleet)
             end,
         })
     end
@@ -773,9 +1005,13 @@ function Battleships:editName(touchmenu_instance)
     dialog:onShowKeyboard()
 end
 
+function Battleships:animationsOn()
+    return self.settings:readSetting("animations") ~= false
+end
+
 function Battleships:showRules()
     UIManager:show(InfoMessage:new{
-        text = _([[Each player has a fleet of five ships (5, 4, 3, 3 and 2 squares) on a 10 × 10 board. Ships may not touch, not even at the corners.
+        text = _([[The host picks the fleet. Classic ships: five straight ships of 5, 4, 3, 3 and 2 squares. Shaped ships: an aircraft carrier (a row of 4 with 2 below the middle), a cruiser (a cross of 5), a battleship (a row of 4 with 1 below), a destroyer (an L of 4) and two submarines of 2. Ships lie on a 10 × 10 board and may not touch, not even at the corners.
 
 Players take turns firing at a square of the opponent's board. After a hit you fire again, after a miss it's the opponent's turn. Whoever sinks the whole enemy fleet first wins.
 
@@ -785,13 +1021,34 @@ end
 
 function Battleships:mainMenu()
     return {
-        { text = _("Host a game"), battleshipswifi_item = "host", callback = function() self:hostGame() end },
+        { text = _("Host a game"), battleshipswifi_item = "host", sub_item_table_func = function()
+            local items = {}
+            for _i, fleet in ipairs(Board.FLEET_ORDER) do
+                table.insert(items, {
+                    text = FLEET_NAMES[fleet],
+                    battleshipswifi_item = "host_" .. fleet,
+                    checked_func = function()
+                        return (self.settings:readSetting("fleet") or Board.DEFAULT_FLEET) == fleet
+                    end,
+                    callback = function() self:hostGame(fleet) end,
+                })
+            end
+            return items
+        end },
         { text = _("Find a game"), battleshipswifi_item = "find", callback = function() self:findGames() end },
         { text = _("Join by address…"), battleshipswifi_item = "join", callback = function() self:joinByAddress() end,
             separator = true },
         { text_func = function() return T(_("Your name: %1"), self:playerName()) end, battleshipswifi_item = "name",
             keep_menu_open = true,
             callback = function(touchmenu_instance) self:editName(touchmenu_instance) end },
+        { text = _("Animations"), battleshipswifi_item = "animations", keep_menu_open = true,
+            checked_func = function() return self:animationsOn() end,
+            callback = function()
+                local on = not self:animationsOn()
+                self.settings:saveSetting("animations", on)
+                self.settings:flush()
+                if game.match then game.animations = on end
+            end },
         { text = _("Rules"), battleshipswifi_item = "rules", keep_menu_open = true,
             callback = function() self:showRules() end },
     }

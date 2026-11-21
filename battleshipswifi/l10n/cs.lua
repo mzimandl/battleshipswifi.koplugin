@@ -13,12 +13,17 @@ return {
     ["Player"] = "Hráč",
     ["Save"] = "Uložit",
     ["Rules"] = "Pravidla",
-    [ [[Each player has a fleet of five ships (5, 4, 3, 3 and 2 squares) on a 10 × 10 board. Ships may not touch, not even at the corners.
+    ["Animations"] = "Animace",
+    ["Classic ships"] = "Klasické lodě",
+    ["Shaped ships"] = "Tvarové lodě",
+    ["%1 (%2)"] = "%1 (%2)",
+    ["You joined %1's game. Fleet: %2."] = "Připojeno ke hře: %1. Flotila: %2.",
+    [ [[The host picks the fleet. Classic ships: five straight ships of 5, 4, 3, 3 and 2 squares. Shaped ships: an aircraft carrier (a row of 4 with 2 below the middle), a cruiser (a cross of 5), a battleship (a row of 4 with 1 below), a destroyer (an L of 4) and two submarines of 2. Ships lie on a 10 × 10 board and may not touch, not even at the corners.
 
 Players take turns firing at a square of the opponent's board. After a hit you fire again, after a miss it's the opponent's turn. Whoever sinks the whole enemy fleet first wins.
 
 Both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.]] ] =
-        [[Každý hráč má na plánu 10 × 10 flotilu pěti lodí (5, 4, 3, 3 a 2 pole). Lodě se nesmějí dotýkat, ani rohem.
+        [[Flotilu vybírá zakládající hráč. Klasické lodě: pět rovných lodí o 5, 4, 3, 3 a 2 polích. Tvarové lodě: letadlová loď (řada 4 polí a pod jejím středem 2), křižník (kříž z 5 polí), bitevní loď (řada 4 polí a pod ní 1), torpédoborec (L ze 4 polí) a dvě ponorky po 2 polích. Lodě leží na plánu 10 × 10 a nesmějí se dotýkat, ani rohem.
 
 Hráči se střídají ve střelbě na pole soupeřova plánu. Po zásahu střílíte znovu, po minutí je na tahu soupeř. Kdo první potopí celou nepřátelskou flotilu, vyhrává.
 
@@ -83,7 +88,6 @@ Obě zařízení musí být ve stejné síti Wi-Fi. Jeden hráč hru založí, d
     ["%1 fired at %2: your ship is sunk."] = "%1 střílí na %2: vaše loď je potopena.",
     ["%1 fired at %2: your last ship is sunk."] = "%1 střílí na %2: vaše poslední loď je potopena.",
     ["%1 joined the game."] = "Do hry vstupuje %1.",
-    ["You joined %1's game."] = "Připojeno ke hře: %1.",
     ["%1 is ready."] = "%1: připraveno.",
     ["The battle begins. You fire first."] = "Bitva začíná. Střílíte první.",
     ["The battle begins. %1 fires first."] = "Bitva začíná. Jako první střílí %1.",
