@@ -2,7 +2,7 @@
 Non-blocking sockets for a match: TCP connection, host listener, UDP discovery.
 No KOReader modules: `socket` (LuaSocket) is passed in, so tests can fake it.
 Everything here is polled (main.lua polls from a UIManager ZMQ), nothing blocks
-except connect().
+except connect() (connect_async() doesn't).
 ]]
 
 local Protocol = require("battleshipswifi/protocol")
@@ -31,6 +31,53 @@ function M.connect(socket, host, port, timeout, now)
         return nil, err
     end
     return M.connection(sock, now)
+end
+
+-- Connecting without blocking (reconnecting in the background) ----------------
+
+local Pending = {}
+Pending.__index = Pending
+
+--- Starts connecting to host:port. Returns a pending connection (see poll()),
+-- or nil, error.
+function M.connect_async(socket, host, port, now)
+    local sock = socket.tcp()
+    if not sock then return nil, "tcp" end
+    sock:settimeout(0)
+    local p = setmetatable({ sock = sock, host = host, port = port, started = now or 0 }, Pending)
+    local ok, err = sock:connect(host, port)
+    if ok then p.done = true
+    elseif not p:waiting(err) then
+        sock:close()
+        return nil, err
+    end
+    return p
+end
+
+-- LuaSocket's answers while a non-blocking connect is under way.
+function Pending:waiting(err)
+    return err == "timeout" or (err or ""):find("in progress", 1, true) ~= nil
+end
+
+--- The connection once it is made; nil while it is under way; false, error when
+-- it failed or took longer than `timeout` seconds.
+function Pending:poll(now, timeout)
+    if not self.done then
+        local ok, err = self.sock:connect(self.host, self.port)
+        if ok or err == "already connected" then
+            self.done = true
+        elseif not self:waiting(err) or (now or 0) - self.started > (timeout or 5) then
+            self.sock:close()
+            return false, err or "timeout"
+        else
+            return nil
+        end
+    end
+    return M.connection(self.sock, now)
+end
+
+function Pending:close()
+    self.sock:close()
 end
 
 function Conn:send(line)
@@ -111,14 +158,19 @@ function Host:accept()
 end
 
 --- Answers discovery requests with our fleet and name (only when `name` is
--- given, i.e. while waiting for an opponent).
-function Host:answer(name, fleet)
+-- given, i.e. while waiting for an opponent), or, with `resume` (a session id)
+-- while waiting for our guest to come back, with that.
+function Host:answer(name, fleet, resume)
     if not self.udp then return end
     while true do
         local msg, ip, port = self.udp:receivefrom()
         if not msg then break end
-        if name and Protocol.is_discover(msg) then
-            self.udp:sendto(Protocol.announce(self.port, fleet or "classic", name), ip, port)
+        if Protocol.is_discover(msg) then
+            if resume then
+                self.udp:sendto(Protocol.announce_resume(self.port, resume), ip, port)
+            elseif name then
+                self.udp:sendto(Protocol.announce(self.port, fleet or "classic", name), ip, port)
+            end
         end
     end
 end
@@ -134,7 +186,8 @@ local Search = {}
 Search.__index = Search
 
 --- Broadcasts DISCOVER (send(now) every second or so) and collects answers in
--- `games` (list of { ip, port, fleet, name, seen }).
+-- `games` (list of { ip, port, fleet, name, seen }), and the hosts waiting for
+-- their guest in `resumes` (session id → { ip, port, seen }).
 function M.search(socket, local_ip)
     local udp = socket.udp()
     if not udp then return nil, "udp" end
@@ -145,7 +198,7 @@ function M.search(socket, local_ip)
     end
     udp:settimeout(0)
     udp:setoption("broadcast", true)
-    return setmetatable({ udp = udp, games = {}, targets = Protocol.broadcasts(local_ip) }, Search)
+    return setmetatable({ udp = udp, games = {}, resumes = {}, targets = Protocol.broadcasts(local_ip) }, Search)
 end
 
 function Search:send()
@@ -161,6 +214,10 @@ function Search:poll(now)
         local msg, ip = self.udp:receivefrom()
         if not msg then break end
         local game = Protocol.parse_announce(msg)
+        local resume = not game and Protocol.parse_announce_resume(msg)
+        if resume then
+            self.resumes[resume.id] = { ip = ip, port = resume.port, seen = now }
+        end
         if game then
             local found
             for _i, g in ipairs(self.games) do

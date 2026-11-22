@@ -226,7 +226,7 @@ local function pair(seed)
             end
         end
     end
-    return host, guest, deliver, events
+    return host, guest, deliver, events, { to_host = to_host, to_guest = to_guest }
 end
 
 local host, guest, deliver, events = pair(7)
@@ -328,6 +328,71 @@ do
     eq(tostring(ev3.fleet_changed) .. " " .. g3.peer, "false Host Name", "fleet known from the game list")
     eq(select(2, Match.new{ role = "guest", name = "G", send = function() end }:receive("WELCOME 2 boats H")),
         "bad WELCOME", "unknown fleet refused")
+end
+
+-- resuming after a lost connection
+do
+    local h, g, dl, _ev, q = pair(31)
+    local function lose() -- the connection drops: whatever is on the way is gone
+        for k in pairs(q.to_host) do q.to_host[k] = nil end
+        for k in pairs(q.to_guest) do q.to_guest[k] = nil end
+    end
+    g:hello()
+    dl()
+    eq(g.session ~= nil and g.session == h.session and h.peer_resumes, true, "SESSION exchanged")
+    eq(h:can_resume() or g:can_resume(), false, "no resuming before the battle")
+    h:set_ready(); g:set_ready()
+    dl()
+    eq(h:can_resume() and g:can_resume(), true, "both can resume once the battle started")
+    -- the shooter's SHOT is lost
+    local shooter, other = h, g
+    if g:my_turn() then shooter, other = g, h end
+    local x, y
+    for i = 0, 99 do
+        x, y = i % 10, math.floor(i / 10)
+        if shooter.target:can_fire(x, y) then break end
+    end
+    shooter:fire(x, y)
+    lose()
+    eq(shooter.pending ~= nil and other.board.shots[y][x] == nil, true, "shot lost on the way")
+    g:resume()
+    dl()
+    eq(shooter.pending, nil, "after resuming, the shot arrived and its result came back")
+    eq(other.board.shots[y][x] ~= nil, true, "the shot was taken")
+    eq(h.received .. "/" .. #g.log .. " " .. g.received .. "/" .. #h.log, #g.log .. "/" .. #g.log .. " " .. #h.log .. "/" .. #h.log,
+        "both have every game line")
+    -- the RESULT is lost this time (the shot arrived)
+    local s2, o2 = h:my_turn() and h or g, h:my_turn() and g or h
+    for i = 0, 99 do
+        x, y = i % 10, math.floor(i / 10)
+        if s2.target:can_fire(x, y) then break end
+    end
+    s2:fire(x, y)
+    if s2 == h then -- deliver the SHOT only
+        local line = table.remove(q.to_guest, 1):gsub("\n$", "")
+        g:receive(line)
+    else
+        local line = table.remove(q.to_host, 1):gsub("\n$", "")
+        h:receive(line)
+    end
+    lose()
+    eq(s2.pending ~= nil and o2.board.shots[y][x] ~= nil, true, "result lost on the way")
+    g:resume()
+    dl()
+    eq(s2.pending, nil, "the result arrives after resuming")
+    eq(s2.target.marks[y][x] ~= nil, true, "and is recorded")
+    -- play to the end after all that
+    play(h, g, dl)
+    eq(h.phase .. g.phase, "overover", "the resumed game ends normally")
+    -- an unknown session is refused
+    local h3 = Match.new{ role = "host", name = "H", send = function() end }
+    eq(select(2, h3:receive("RESUME 2 nosuchgame 0 G")), "resume", "RESUME of another game refused")
+    eq(select(2, g:receive("ERROR resume")), "resume", "the guest learns it can't resume")
+    -- an older guest (no SESSION answer): no resuming
+    local h4 = Match.new{ role = "host", name = "H", send = function() end }
+    h4:receive("HELLO 2 Old")
+    h4:set_ready(); h4:receive("READY")
+    eq(h4.phase == "battle" and not h4:can_resume(), true, "a guest that didn't answer SESSION can't resume")
 end
 
 -- protocol errors
@@ -534,6 +599,34 @@ hudp.inbox = { { "DISCOVER 2", "10.0.0.9", 7533 } }
 hst:answer(nil)
 eq(#hudp.out, 1, "no answers once the game is full")
 
+hudp.inbox = { { "DISCOVER 2", "10.0.0.9", 7533 } }
+hst:answer(nil, "shapes", "abc123")
+eq(hudp.out[#hudp.out][1], "RESUMEGAME 2 7531 abc123", "a host waiting for its guest answers with the session")
+eq(Protocol.parse_announce_resume("RESUMEGAME 2 7531 abc123").id, "abc123", "resume announce parsed")
+eq(Protocol.parse_announce("RESUMEGAME 2 7531 abc123"), nil, "not listed as an open game")
+
+-- connecting without blocking
+do
+    local answers = { { nil, "timeout" }, { nil, "Operation already in progress" }, { nil, "already connected" } }
+    local tcp = fake_tcp()
+    function tcp:connect() local a = table.remove(answers, 1); return a[1], a[2] end
+    local sock_api = { tcp = function() return tcp end }
+    local pend = Net.connect_async(sock_api, "10.0.0.9", 7531, 0)
+    eq(pend ~= nil, true, "connecting started")
+    eq(pend:poll(1, 5), nil, "still connecting")
+    local c = pend:poll(2, 5)
+    eq(c ~= nil and c.sock == tcp, true, "connected")
+    local tcp2 = fake_tcp()
+    function tcp2:connect() return nil, "timeout" end
+    local pend2 = Net.connect_async({ tcp = function() return tcp2 end }, "10.0.0.9", 7531, 0)
+    eq(pend2:poll(6, 5), false, "gives up after the timeout")
+    eq(tcp2.closed, true, "and closes the socket")
+    local tcp3 = fake_tcp()
+    function tcp3:connect() return nil, "connection refused" end
+    eq(select(2, Net.connect_async({ tcp = function() return tcp3 end }, "10.0.0.9", 7531, 0)), "connection refused",
+        "refused at once")
+end
+
 local search = Net.search(fake_socket, "10.0.0.5")
 local sudp = udps[#udps]
 eq(sudp.port, Protocol.SEARCH_PORT, "search listens on its port")
@@ -544,6 +637,10 @@ eq(search:poll(1), true, "found a game")
 eq(#search.games .. " " .. search.games[1].name .. " " .. search.games[1].ip .. " " .. search.games[1].fleet,
     "1 Host 10.0.0.9 shapes", "one entry per host, with its fleet")
 eq(search:poll(2), false, "nothing new")
+sudp.inbox = { { "RESUMEGAME 2 7000 abc123", "10.0.0.77", 7532 } }
+search:poll(3)
+eq(search.resumes.abc123 and (search.resumes.abc123.ip .. ":" .. search.resumes.abc123.port), "10.0.0.77:7000",
+    "a host waiting for its guest found, at its new address")
 eq(search:expire(4, 5), false, "recently seen game stays")
 eq(search:expire(7, 5), true, "silent game dropped")
 eq(#search.games, 0, "list empty")

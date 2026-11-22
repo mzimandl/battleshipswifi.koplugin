@@ -497,6 +497,74 @@ eq(status:match("^The other device has a different version") ~= nil, true, "vers
 screen:onClose()
 eq(#zmqs, 0, "game ended")
 
+-- Resuming after a lost connection (host) -----------------------------------------
+local function status_of(sc) return sc:statusText() end
+item("host").sub_item_table_func()[1].callback()
+screen = shown[#shown]
+client = fake_tcp({ "HELLO 2 Guest\n" })
+table.insert(pending_clients, client)
+tick(2)
+local session = client.sent:match("SESSION (%w+)\n")
+eq(session ~= nil, true, "the host sends its session")
+client.incoming = { "SESSION " .. session .. "\nREADY\n" }
+buttons(screen)["Ready"].callback()
+tick()
+eq(#boards(screen), 2, "battle (resumable guest)")
+-- the guest's connection drops
+client.incoming = { "CLOSE" }
+tick()
+eq(status_of(screen), "Connection to Guest lost.\nWaiting for Guest to come back…", "host waits for the guest")
+eq(buttons(screen)["Close"] ~= nil and boards(screen)[1].on_tap == nil, true, "only Close, no shots while waiting")
+hudp = udp_on(7532)
+hudp.inbox = { { "DISCOVER 2", "192.168.1.31", 7533 } }
+tick()
+eq(hudp.out[#hudp.out][1], "RESUMEGAME 2 7531 " .. session, "searches answered with the session")
+-- a stranger is turned away, the host keeps waiting
+local stranger = fake_tcp({ "HELLO 2 Stranger\n" })
+table.insert(pending_clients, stranger)
+tick(2)
+eq(stranger.sent .. tostring(stranger.closed), "ERROR busy\ntrue", "a stranger is turned away")
+eq(status_of(screen):find("Waiting for Guest to come back", 1, true) ~= nil, true, "still waiting")
+-- the guest comes back
+local back = fake_tcp({ "RESUME 2 " .. session .. " 2 Guest\n" })
+table.insert(pending_clients, back)
+tick(2)
+eq(back.sent:match("^RESUMED 2 %d+\n") ~= nil, true, "host answers RESUMED")
+eq(status_of(screen):match("^Connection to Guest restored.") ~= nil, true, "restored: " .. status_of(screen))
+eq(boards(screen)[1].on_tap ~= nil or status_of(screen):find("aiming", 1, true) ~= nil, true, "the game goes on")
+-- the guest comes back over a new connection before the host noticed the old one was gone
+local again = fake_tcp({ "RESUME 2 " .. session .. " 2 Guest\n" })
+table.insert(pending_clients, again)
+tick(3)
+eq(back.closed, true, "the old connection is dropped")
+eq(again.sent:match("^RESUMED 2") ~= nil, true, "and the new one goes on")
+-- going to sleep keeps the game; waking up listens again
+local binds_before = #udps
+plugin:onSuspend()
+eq(#zmqs, 1, "asleep: the game is kept")
+eq(again.closed and not again.sent:find("BYE", 1, true), true, "the connection closed without BYE")
+eq(status_of(screen), "Connection to Guest restored.\nWaiting for Guest to come back…", "waiting while asleep")
+plugin:onResume()
+tick()
+eq(#udps > binds_before, true, "listening again after waking up")
+local after = fake_tcp({ "RESUME 2 " .. session .. " 2 Guest\n" })
+table.insert(pending_clients, after)
+tick(2)
+eq(status_of(screen):match("^Connection to Guest restored.") ~= nil and after.sent:match("^RESUMED") ~= nil, true,
+    "the guest comes back after the host slept")
+-- an unknown session is refused, the game keeps waiting for the right one
+after.incoming = { "CLOSE" }
+tick()
+local wrong = fake_tcp({ "RESUME 2 othergame 0 Guest\n" })
+table.insert(pending_clients, wrong)
+tick(2)
+eq(wrong.sent .. tostring(wrong.closed), "ERROR resume\ntrue", "RESUME of another game refused")
+eq(status_of(screen):find("Waiting for Guest to come back", 1, true) ~= nil, true, "still waiting for the right one")
+screen:onClose()
+eq(shown[#shown].text, "Leave the game?", "leaving while waiting asks first")
+shown[#shown].ok_callback()
+eq(#zmqs, 0, "Close (and confirm) ends it")
+
 -- Joining by address -----------------------------------------------------------
 item("join").callback()
 local dialog = dialogs[#dialogs]
@@ -533,9 +601,52 @@ eq(sock.sent:match("PING\n$") ~= nil, true, "keepalive")
 sock.incoming = { "CLOSE" }
 tick()
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
-eq(status, "Connection to Host lost.", "guest: connection lost ends the game")
+eq(status, "Connection to Host lost.", "guest: connection lost ends the game (old host, no SESSION)")
 plugin:onSuspend()
 eq(#zmqs .. " " .. standby, "0 0", "suspend ends the game")
+
+-- Resuming after a lost connection (guest) ------------------------------------------
+item("join").callback()
+dialog = dialogs[#dialogs]
+dialog.text_value = "10.0.0.9"
+dialog.buttons[1][2].callback()
+sock = tcps[#tcps]
+screen = shown[#shown]
+sock.incoming = { "WELCOME 2 classic Host\nSESSION abc123\nREADY\n" }
+tick()
+eq(sock.sent:find("SESSION abc123\n", 1, true) ~= nil, true, "guest answers SESSION")
+buttons(screen)["Ready"].callback()
+sock.incoming = { "START host\n" }
+tick()
+eq(#boards(screen), 2, "guest in the battle")
+sock.incoming = { "CLOSE" }
+tick()
+eq(status_of(screen), "Connection to Host lost.\nReconnecting to Host…", "guest reconnects")
+local tcps_before = #tcps
+tick()
+eq(#tcps > tcps_before, true, "a new connection attempt")
+local resock = tcps[#tcps]
+tick()
+eq(resock.sent:match("^RESUME 2 abc123 %d+ Martin\n") ~= nil, true, "guest asks to resume: " .. resock.sent)
+resock.incoming = { "RESUMED 2 1\n" }
+tick()
+eq(status_of(screen):match("^Connection to Host restored.") ~= nil, true, "guest restored: " .. status_of(screen))
+eq(udp_on(7533) == nil or udp_on(7533).closed, true, "the search for the host's address stopped")
+-- the host still holds an earlier attempt: try again later
+resock.incoming = { "CLOSE" }
+tick(3)
+tcps[#tcps].incoming = { "ERROR busy\n" }
+tick()
+eq(status_of(screen):find("Reconnecting to Host", 1, true) ~= nil, true, "busy while reconnecting: try again")
+clock = clock + 4
+tick(3)
+-- the host has started another game meanwhile
+local last = tcps[#tcps]
+last.incoming = { "ERROR resume\n" }
+tick()
+eq(status_of(screen), "The game can no longer be resumed.", "guest gives up when the host refuses")
+screen:onClose()
+eq(#zmqs .. " " .. standby, "0 0", "ended")
 
 -- Finding games ------------------------------------------------------------------
 item("find").callback()

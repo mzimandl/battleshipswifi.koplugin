@@ -10,7 +10,13 @@ ship lets the shooter fire again; a miss passes the turn.
 receive() and the local actions return an event table for the UI (or nil when
 nothing visible changed); on a protocol error receive() returns nil, error.
 Events: joined (fleet_changed when the guest had to take the host's fleet), peer_ready, start, incoming (opponent's shot), result (ours),
-fleet, rematch_request, rematch, left.
+fleet, rematch_request, rematch, left, resumed.
+
+Resuming after a lost connection (see protocol.lua): the game lines each side
+sends are kept in `log`, the ones received counted in `received`; resume()
+(guest) and the RESUME/RESUMED handlers send again what the other side missed.
+can_resume() says whether both sides know how (a battle has started, SESSION
+exchanged).
 ]]
 
 local Board = require("battleshipswifi/board")
@@ -30,10 +36,25 @@ function M.new(opts)
         name = Protocol.clean_name(opts.name),
         send_line = opts.send,
         rand = opts.rand or math.random,
+        log = {}, -- game lines we sent (since the opponent joined)
+        received = 0, -- game lines received
+        started = false, -- a battle has started (with this opponent)
     }, Match)
+    if m.role == "host" then
+        local chars, id = "abcdefghijklmnopqrstuvwxyz0123456789", {}
+        for i = 1, 10 do
+            local k = m.rand(#chars)
+            id[i] = chars:sub(k, k)
+        end
+        -- with the time: math.random may start the same after every launch
+        m.session = table.concat(id) .. string.format("%x", os.time())
+    end
     m:reset()
     return m
 end
+
+-- Lines that change the game: counted, and sent again after a lost connection.
+local GAME_LINES = { READY = true, START = true, SHOT = true, RESULT = true, FLEET = true, REMATCH = true }
 
 function Match:reset()
     self.phase = "placing"
@@ -46,8 +67,27 @@ function Match:reset()
     self.last_fired, self.last_incoming = nil, nil
 end
 
-function Match:send(...)
-    if self.send_line then self.send_line(Protocol.line(...)) end
+function Match:send(cmd, ...)
+    local line = Protocol.line(cmd, ...)
+    if GAME_LINES[cmd] then table.insert(self.log, line) end
+    if self.send_line then self.send_line(line) end
+end
+
+-- Sends again our game lines after the first `n` (the ones the other side has).
+function Match:send_again(n)
+    for i = n + 1, #self.log do
+        if self.send_line then self.send_line(self.log[i]) end
+    end
+end
+
+--- Whether a lost connection can be resumed (else the game is over).
+function Match:can_resume()
+    return self.started and self.session ~= nil and (self.role == "guest" or self.peer_resumes == true)
+end
+
+--- Guest, connected again after a lost connection: asks to go on.
+function Match:resume()
+    self:send("RESUME", Protocol.VERSION, self.session, self.received, self.name)
 end
 
 --- Guest: introduce ourselves after connecting.
@@ -67,9 +107,11 @@ end
 function Match:drop_peer()
     self.peer = nil
     self.peer_ready = false
+    self.log, self.received, self.peer_resumes = {}, 0, nil
 end
 
 function Match:begin(first)
+    self.started = true
     self.phase = "battle"
     self.turn = first == self.role and "me" or "peer"
     return { type = "start", turn = self.turn }
@@ -126,7 +168,9 @@ function handlers:HELLO(words, rest)
         return nil, "version"
     end
     self.peer = Protocol.clean_name(rest:match("^%S+%s*(.*)$"))
+    self.log, self.received, self.peer_resumes = {}, 0, nil
     self:send("WELCOME", Protocol.VERSION, self.fleet, self.name)
+    self:send("SESSION", self.session)
     if self.ready then self:send("READY") end
     return { type = "joined", name = self.peer }
 end
@@ -145,6 +189,42 @@ function handlers:WELCOME(words, rest)
     end
     if self.ready then self:send("READY") end
     return { type = "joined", name = self.peer, fleet_changed = changed }
+end
+
+function handlers:SESSION(words)
+    local id = words[1]
+    if not id or not id:match("^%w+$") then return nil, "bad SESSION" end
+    if self.role == "guest" then
+        self.session = id
+        self:send("SESSION", id) -- we can resume
+    elseif id == self.session then
+        self.peer_resumes = true
+    end
+    return nil
+end
+
+function handlers:RESUME(words, rest)
+    local n = tonumber(words[3])
+    if self.role ~= "host" or tonumber(words[1]) ~= Protocol.VERSION or words[2] ~= self.session
+        or not self.started or not self.peer or not n or n % 1 ~= 0 or n < 0 or n > #self.log then
+        self:send("ERROR", "resume")
+        return nil, "resume"
+    end
+    local name = rest:match("^%S+%s+%S+%s+%S+%s*(.*)$")
+    if name and name ~= "" then self.peer = Protocol.clean_name(name) end
+    self:send("RESUMED", Protocol.VERSION, self.received)
+    self:send_again(n)
+    return { type = "resumed" }
+end
+
+function handlers:RESUMED(words)
+    local n = tonumber(words[2])
+    if self.role ~= "guest" or tonumber(words[1]) ~= Protocol.VERSION or not n or n % 1 ~= 0
+        or n < 0 or n > #self.log then
+        return nil, "bad RESUMED"
+    end
+    self:send_again(n)
+    return { type = "resumed" }
 end
 
 function handlers:ERROR(words)
@@ -238,7 +318,9 @@ function Match:receive(line)
     local cmd, words, rest = Protocol.parse(line)
     local handler = cmd and handlers[cmd]
     if not handler then return nil end -- unknown commands are ignored (newer versions)
-    return handler(self, words, rest)
+    local ev, err = handler(self, words, rest)
+    if GAME_LINES[cmd] and not err then self.received = self.received + 1 end
+    return ev, err
 end
 
 --- Whose turn it is: "me", "peer" or nil.

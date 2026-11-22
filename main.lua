@@ -62,6 +62,7 @@ local PING_INTERVAL = 5    -- seconds
 local PEER_TIMEOUT = 30    -- seconds without any message → connection lost
 local CONNECT_TIMEOUT = 5  -- seconds, blocks the UI
 local SEARCH_INTERVAL = 1  -- seconds between DISCOVER broadcasts
+local RECONNECT_INTERVAL = 3 -- seconds between attempts to get a lost connection back
 local SEARCH_EXPIRE = 5    -- seconds: games not heard of are dropped from the list
 
 local LEVEL_NAMES = {
@@ -87,7 +88,11 @@ end
 -- The running game and the game search. Module-level, not on the plugin
 -- instance: KOReader makes a new instance for every reader/file manager.
 -- game: { role, match, conn, host, ip, screen, zmq, message, lost, last_ping, rules, animations,
---         ai (AI.player when playing against the e-reader), standby (preventStandby() called) }
+--         ai (AI.player when playing against the e-reader), standby (preventStandby() called),
+--         address (guest: the host's { ip, port }),
+--         waiting (the connection is lost, the game can resume), paused (asleep),
+--         reconnect (guest while waiting: { pending, next_at, search, found, rules }),
+--         candidate (host: a new connection that may be the guest coming back), rebind_at }
 local game = {}
 -- finder: { search, menu, zmq, last_sent, rules }
 local finder = {}
@@ -122,6 +127,16 @@ end
 local function kindle_firewall(op, rules)
     if not rules or not Device:isKindle() then return end
     for _i, rule in ipairs(rules) do os.execute("iptables " .. op .. " " .. rule) end
+end
+
+-- Stops trying to reconnect (guest) and searching for the host's new address.
+local function stop_reconnect()
+    local r = game.reconnect
+    if not r then return end
+    if r.pending then r.pending:close() end
+    if r.search then r.search:close() end
+    kindle_firewall("-D", r.rules)
+    game.reconnect = nil
 end
 
 -- Polling: UIManager calls a ZMQ's waitEvent() about every 50 ms; it must
@@ -835,6 +850,9 @@ function GameScreen:statusText()
     if game.message then lines[#lines + 1] = game.message end
     if game.lost then
         -- message says why
+    elseif game.waiting then
+        lines[#lines + 1] = game.role == "host" and T(_("Waiting for %1 to come back…"), m.peer)
+            or T(_("Reconnecting to %1…"), m.peer)
     elseif m.phase == "placing" then
         if not m.ready then
             if not self.selected then
@@ -873,7 +891,7 @@ end
 function GameScreen:buttonRow()
     local m = game.match
     local close = { text = _("Close"), callback = function() self:onClose() end }
-    if game.lost then return { close } end
+    if game.lost or game.waiting then return { close } end
     if m.phase == "placing" then
         return {
             { text = _("Random"), enabled = not m.ready, callback = function()
@@ -997,7 +1015,8 @@ function GameScreen:build()
         local target = BoardWidget:new{
             size = target_size, mode = "target", target = m.target, last = m.last_fired,
             anim = anim and anim.board == "target" and anim or nil,
-            on_tap = m.phase == "battle" and not game.lost and function(x, y) self:onTargetTap(x, y) end or nil,
+            on_tap = m.phase == "battle" and not game.lost and not game.waiting
+                and function(x, y) self:onTargetTap(x, y) end or nil,
         }
         local own = BoardWidget:new{
             size = own_size, mode = "own", board = m.board, last = m.last_incoming,
@@ -1085,9 +1104,12 @@ end
 local ERRORS = {
     version = _("The other device has a different version of Battleships."),
     busy = _("This game already has two players."),
+    resume = _("The game can no longer be resumed."),
 }
 
 function Battleships.endGame()
+    if game.candidate then game.candidate:close() end
+    stop_reconnect()
     if game.conn then
         if game.match and game.match.peer then game.match:bye() end
         game.conn:close()
@@ -1105,12 +1127,18 @@ function Battleships.endGame()
 end
 
 --- The connection ended: `reason` = "left" (BYE), an ERRORS key, or a socket error.
-local function connection_lost(reason)
+--- The connection is gone. resumable: lost by the network (not BYE, not an error),
+-- so the game waits for it to come back when both sides know how.
+local function connection_lost(reason, resumable)
     if game.conn then game.conn:close() end
     game.conn = nil
     local m = game.match
     local who = m.peer or _("The opponent")
-    if game.role == "host" and m.phase == "placing" and not ERRORS[reason] then
+    if resumable and m:can_resume() then
+        game.waiting = true
+        game.message = T(_("Connection to %1 lost."), who)
+        if game.role == "guest" and not game.reconnect then game.reconnect = { next_at = 0 } end
+    elseif game.role == "host" and m.phase == "placing" and not ERRORS[reason] then
         -- the battle hasn't started: wait for someone else
         if m.peer then game.message = T(_("%1 left."), who) end
         m:drop_peer()
@@ -1120,6 +1148,8 @@ local function connection_lost(reason)
         elseif reason == "left" then game.message = T(_("%1 left the game."), who)
         else game.message = m.peer and T(_("Connection to %1 lost."), who) or _("Connection lost.") end
         if game.host then game.host:close(); game.host = nil end
+        game.waiting = nil
+        stop_reconnect()
     end
     if game.screen then
         game.screen:stopAnimation()
@@ -1179,22 +1209,116 @@ function Battleships.onGameEvent(ev)
     elseif t == "left" then
         connection_lost("left")
         return
+    elseif t == "resumed" then
+        game.waiting = nil
+        stop_reconnect()
+        game.message = T(_("Connection to %1 restored."), m.peer)
     end
     if game.screen then game.screen:update() end
 end
 
--- A line from the opponent (device or e-reader). Returns false when it ended the game.
+-- A line from the opponent (device or e-reader). Returns false when it ended the game
+-- (or, while waiting for the opponent to come back, the connection that sent it).
 local function handle_line(line)
     local conn = game.conn
     local ev, perr = game.match:receive(line)
     if perr then
         logger.warn("Battleships: protocol error", perr, line)
+        if game.waiting and game.role == "host" then
+            -- not our guest coming back (RESUME already answered ERROR resume)
+            if conn then
+                if perr ~= "resume" then conn:send(Protocol.line("ERROR", "busy")) end
+                conn:close()
+            end
+            game.conn = nil
+            return false
+        end
+        if game.waiting and game.role == "guest" and perr == "busy" then
+            -- the host still holds our previous attempt: try again
+            if conn then conn:close() end
+            game.conn = nil
+            if game.reconnect then game.reconnect.next_at = now() + RECONNECT_INTERVAL end
+            return false
+        end
         if conn and not ERRORS[perr] then conn:send(Protocol.line("ERROR", "protocol")) end
         connection_lost(perr)
         return false
     end
     if ev then Battleships.onGameEvent(ev) end
     return game.conn == conn and game.match ~= nil
+end
+
+-- Guest waiting to resume: connects again, to the last address or to the one the
+-- host answers searches with (its address may have changed), every RECONNECT_INTERVAL.
+local function poll_reconnect(t)
+    local socket = require("socket")
+    local r = game.reconnect
+    if not r.search and t >= (r.search_at or 0) then
+        r.search = Net.search(socket, Net.local_ip(socket))
+        if r.search then
+            r.rules = search_rules()
+            kindle_firewall("-A", r.rules)
+            r.last_sent = 0
+        else
+            r.search_at = t + RECONNECT_INTERVAL -- no network yet
+        end
+    end
+    if r.search then
+        if t - r.last_sent >= SEARCH_INTERVAL then
+            r.last_sent = t
+            r.search:send()
+        end
+        r.search:poll(t)
+        r.found = r.search.resumes[game.match.session] or r.found
+    end
+    if game.conn then return end -- connected: waiting for RESUMED
+    if r.pending then
+        local conn = r.pending:poll(t, CONNECT_TIMEOUT)
+        if conn then
+            r.pending = nil
+            game.conn = conn
+            game.last_ping = t
+            game.match:resume()
+        elseif conn == false then
+            r.pending = nil
+            r.next_at = t + RECONNECT_INTERVAL
+        end
+    elseif t >= (r.next_at or 0) then
+        local addr = r.found or game.address
+        r.pending = Net.connect_async(socket, addr.ip, addr.port, t)
+        if not r.pending then r.next_at = t + RECONNECT_INTERVAL end
+    end
+end
+
+-- Host: a second device connecting while we still have a connection. After the
+-- battle started it may be our guest coming back (we haven't noticed it was gone):
+-- its first line tells (RESUME); else it is turned away.
+local function poll_candidate(t)
+    local cand = game.candidate
+    local lines = cand:poll(t)
+    if not lines then
+        game.candidate = nil
+        return
+    end
+    local first = lines[1]
+    if not first then
+        if t - cand.last_seen > CONNECT_TIMEOUT then cand:close(); game.candidate = nil end
+        return
+    end
+    game.candidate = nil
+    if not first:match("^RESUME ") then
+        cand:send(Protocol.line("ERROR", "busy"))
+        cand:close()
+        return
+    end
+    -- our guest is back: drop the old connection, go on with this one
+    if game.conn then game.conn:close() end
+    game.conn = cand
+    game.waiting = true
+    game.last_ping = t
+    for _i, line in ipairs(lines) do
+        if not handle_line(line) then return end
+    end
 end
 
 local function poll_game()
@@ -1208,20 +1332,36 @@ local function poll_game()
         end
         return
     end
+    if game.paused then return end -- asleep: no network
+    local m = game.match
+    if game.role == "host" and not game.host and game.waiting and t >= (game.rebind_at or 0) then
+        -- after sleeping: listen again (the address may have changed)
+        local socket = require("socket")
+        game.host = Net.host(socket, Protocol.PORT)
+        if game.host then game.ip = Net.local_ip(socket) else game.rebind_at = t + RECONNECT_INTERVAL end
+    end
     if game.host then
         local client = game.host:accept()
         if client then
-            if game.conn then
+            if not game.conn then
+                game.conn = Net.connection(client, t)
+                game.last_ping = t
+            elseif m:can_resume() and not game.candidate then
+                game.candidate = Net.connection(client, t)
+            else
                 client:settimeout(1)
                 client:send(Protocol.line("ERROR", "busy"))
                 client:close()
-            else
-                game.conn = Net.connection(client, t)
-                game.last_ping = t
             end
         end
-        game.host:answer(not game.conn and game.match.name or nil, game.match.fleet)
+        if game.waiting then game.host:answer(nil, m.fleet, m.session)
+        else game.host:answer(not game.conn and m.name or nil, m.fleet) end
     end
+    if game.candidate then
+        poll_candidate(t)
+        if game.match ~= m then return end
+    end
+    if game.reconnect then poll_reconnect(t) end
     local conn = game.conn
     if not conn then return end
     local lines, err = conn:poll(t)
@@ -1229,12 +1369,12 @@ local function poll_game()
         if not handle_line(line) then return end -- the line ended the connection
     end
     if not lines then
-        connection_lost(err)
+        connection_lost(err, true)
     elseif t - conn.last_seen > PEER_TIMEOUT then
-        connection_lost("timeout")
+        connection_lost("timeout", true)
     elseif t - (game.last_ping or 0) >= PING_INTERVAL then
         game.last_ping = t
-        game.match:ping()
+        m:ping()
     end
 end
 
@@ -1309,7 +1449,7 @@ function Battleships:joinGame(ip, port, fleet)
             UIManager:show(InfoMessage:new{ text = T(_("Cannot connect to %1: %2"), ip, tostring(err)) })
             return
         end
-        self:startGame("guest", { conn = conn, rules = rules, fleet = fleet })
+        self:startGame("guest", { conn = conn, rules = rules, fleet = fleet, address = { ip = ip, port = port } })
         game.match:hello()
     end)
 end
@@ -1549,9 +1689,32 @@ end
 
 function Battleships:onSuspend()
     stop_finder()
-    -- Wi-Fi goes off while the device sleeps: leave instead of timing out.
-    -- A game against the e-reader just waits.
-    if not game.ai then Battleships.endGame() end
+    if game.ai or not game.match then return end -- a game against the e-reader just waits
+    if game.lost or not game.match:can_resume() then
+        -- Wi-Fi goes off while the device sleeps: leave instead of timing out
+        Battleships.endGame()
+        return
+    end
+    -- the game waits; the network goes (no BYE: the opponent waits for us to come back)
+    if game.candidate then game.candidate:close(); game.candidate = nil end
+    if game.conn then game.conn:close(); game.conn = nil end
+    if game.host then game.host:close(); game.host = nil end
+    stop_reconnect()
+    game.reconnect = game.role == "guest" and { next_at = 0 } or nil
+    game.waiting, game.paused = true, true
+    if game.screen then
+        game.screen:stopAnimation()
+        game.screen:update()
+    end
+end
+
+function Battleships:onResume()
+    if not game.paused then return end
+    game.paused = nil
+    game.rebind_at = 0
+    if game.screen then game.screen:update() end
+    -- the attempts start right away; this only brings Wi-Fi back if it is off
+    NetworkMgr:runWhenOnline(function() end)
 end
 
 function Battleships:onExit()

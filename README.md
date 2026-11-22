@@ -38,7 +38,8 @@ Board marks: gray ship = yours (dark gray = selected), light gray = no room for 
 ## Network
 - TCP 7531 (the game, host), UDP 7532 (host answers searches), UDP 7533 (searching device listens for answers).
 - On Kindle the plugin opens these ports in the firewall (iptables) for the time of the game.
-- The device doesn't go to standby during a game; going to sleep ends it.
+- The device doesn't go to standby during a game.
+- Once the battle has started, a lost connection doesn't end the game (both devices need 0.7.0 or newer): the host waits for its opponent to come back, the other device keeps reconnecting (every 3 s; if the host's address changed, it finds it by searching the network). Going to sleep works the same way: on waking up the game goes on where it was, shots sent while the connection was down included. **Close** gives up. Before the battle, or with an older version, a lost connection ends the game as before; restarting KOReader ends it too.
 
 ## Development
 Protocol version 2 since 0.3.0 (fleets, shaped ships): older versions can't play with it.

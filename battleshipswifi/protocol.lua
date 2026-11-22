@@ -12,6 +12,15 @@ A ship is "x,y,shape,rot" (see board.lua).
 UDP discovery: a guest sends DISCOVER <version> to the broadcast address,
 the host waiting for an opponent answers GAME <version> <tcp port> <fleet> <name>.
 
+Resuming (since 0.7.0; older versions ignore these commands): after WELCOME the
+host sends SESSION <id>, the guest answers SESSION <id> (so the host knows it can
+resume). The game lines (READY, START, SHOT, RESULT, FLEET, REMATCH) are counted
+on both sides. After the connection is lost, the guest connects again and sends
+RESUME <version> <id> <lines received> <name>; the host answers
+RESUMED <version> <lines received> (or ERROR resume) and both send again the game
+lines the other one missed. A host waiting for its guest to come back answers
+DISCOVER with RESUMEGAME <version> <tcp port> <id> (its address may have changed).
+
 Version 1 (until 0.2.x): ships "x,y,len,dir", no <fleet>.
 ]]
 
@@ -103,6 +112,17 @@ function M.parse_announce(msg)
     local version, port, fleet, name = (msg or ""):match("^GAME (%d+) (%d+) (%l+) ?(.-)%s*$")
     if not version or tonumber(version) ~= M.VERSION then return nil end
     return { port = tonumber(port), fleet = fleet, name = M.clean_name(name) }
+end
+
+function M.announce_resume(port, id)
+    return string.format("RESUMEGAME %d %d %s", M.VERSION, port, id)
+end
+
+--- An answer to DISCOVER from a host waiting for its guest: { port, id }, or nil.
+function M.parse_announce_resume(msg)
+    local version, port, id = (msg or ""):match("^RESUMEGAME (%d+) (%d+) (%w+)%s*$")
+    if not version or tonumber(version) ~= M.VERSION then return nil end
+    return { port = tonumber(port), id = id }
 end
 
 function M.is_discover(msg)
