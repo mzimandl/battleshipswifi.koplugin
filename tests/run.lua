@@ -268,6 +268,17 @@ if guest.winner == "me" then winner, loser = guest, host end
 eq(winner.target.sunk, #Board.FLEETS.classic, "winner sank the whole fleet")
 eq(#loser.target.ships, #Board.FLEETS.classic, "loser sees the winner's whole fleet")
 eq(winner:fire(9, 9), false, "no shots after the game")
+eq(winner.score.me .. ":" .. winner.score.peer .. " " .. loser.score.me .. ":" .. loser.score.peer, "1:0 0:1",
+    "score after the first game")
+local ws = winner.stats.me
+eq(ws.hits, Board.fleet_size("classic"), "winner: every ship square hit")
+eq(ws.shots, ws.hits + (function()
+    local n = 0
+    for y2 = 0, 9 do for x2 = 0, 9 do if winner.target.marks[y2][x2] == "miss" then n = n + 1 end end end
+    return n
+end)(), "winner: shots = hits + misses")
+eq(loser.stats.peer.shots .. "/" .. loser.stats.peer.hits, ws.shots .. "/" .. ws.hits, "both count the same shots")
+eq(ws.best >= 1 and ws.best <= ws.hits, true, "longest series")
 
 guest:request_rematch()
 deliver()
@@ -278,6 +289,8 @@ deliver()
 eq(host.phase .. guest.phase, "placingplacing", "rematch: both place ships again")
 eq(host.ready or guest.ready or host.peer_ready, false, "rematch resets ready")
 eq(host.peer, "Guest", "rematch keeps the opponent")
+eq(winner.score.me + loser.score.peer, 2, "rematch keeps the score")
+eq(host.stats.me.shots + host.stats.peer.shots, 0, "rematch: new game, new numbers")
 
 -- shaped fleet: the host picks it, the guest takes it from WELCOME
 do

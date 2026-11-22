@@ -401,6 +401,8 @@ dirty = {}
 client.incoming = { "RESULT 4 4 sunk 3,4,line2,0\n" }
 tick()
 eq(screen.anim and screen.anim.kind .. #screen.anim.cells, "sunk2", "sunk ship animated on all its squares")
+eq(screen:statusText():match("^E5: hit, the destroyer goes down! Fire again.") ~= nil, true,
+    "the sunk ship named: " .. screen:statusText())
 local fv = screen.fleet_view
 eq(table.concat({ tostring(fv.sunk[1]), tostring(fv.sunk[5]) }, " "), "false true", "overview: the 2-square ship struck through")
 eq(refreshes():find("ui@" .. fv.dimen.w, 1, true) ~= nil, true, "overview refreshed after the sunk ship: " .. refreshes())
@@ -708,11 +710,18 @@ end
 eq(over, true, "a whole game against the e-reader")
 eq(screen:statusText():find("E-reader won.", 1, true) ~= nil or screen:statusText():find("You won!", 1, true) ~= nil,
     true, "winner shown: " .. screen:statusText())
+eq(screen:statusText():match("You: %d+ of %d+ shots hit %(%d+ %%%), longest series %d+%.\nE%-reader: %d+ of %d+ shots hit")
+    ~= nil, true, "numbers of both players after the game: " .. screen:statusText())
+eq(screen:statusText():find("goes down", 1, true), nil, "the last shot's message makes room for them")
+eq(screen.title_bar.subtitle:match("^Opponent: E%-reader · You %d : %d$") ~= nil, true,
+    "score in the title: " .. screen.title_bar.subtitle)
 plugin:onSuspend()
 eq(#zmqs, 1, "going to sleep keeps a game against the e-reader")
+local score_before = screen.title_bar.subtitle
 buttons(screen)["Play again"].callback()
 tick(2)
 eq(#boards(screen), 1, "the e-reader plays again: placing")
+eq(screen.title_bar.subtitle, score_before, "the score stays for the next game")
 plugin:onExit()
 eq(#zmqs .. " " .. standby, "0 0", "exit ends it")
 

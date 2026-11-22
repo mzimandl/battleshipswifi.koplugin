@@ -847,7 +847,9 @@ end
 function GameScreen:statusText()
     local m = game.match
     local lines = {}
-    if game.message then lines[#lines + 1] = game.message end
+    -- after the game the winner and the numbers say it all
+    local over = m.phase == "over" and not game.lost and not game.waiting
+    if game.message and not over then lines[#lines + 1] = game.message end
     if game.lost then
         -- message says why
     elseif game.waiting then
@@ -879,6 +881,12 @@ function GameScreen:statusText()
         else lines[#lines + 1] = T(_("%1 is aiming…"), m.peer) end
     else
         lines[#lines + 1] = m.winner == "me" and _("You won!") or T(_("%1 won."), m.peer)
+        local function pct(st) return st.shots > 0 and math.floor(100 * st.hits / st.shots + 0.5) or 0 end
+        local me, peer = m.stats.me, m.stats.peer
+        lines[#lines + 1] = T(_("You: %1 of %2 shots hit (%3 %), longest series %4."),
+            me.hits, me.shots, pct(me), me.best)
+        lines[#lines + 1] = T(_("%1: %2 of %3 shots hit (%4 %), longest series %5."),
+            m.peer, peer.hits, peer.shots, pct(peer), peer.best)
         if m.rematch and not m.peer_rematch then
             lines[#lines + 1] = T(_("Waiting for %1…"), m.peer)
         elseif m.peer_rematch and not m.rematch then
@@ -951,7 +959,9 @@ function GameScreen:build()
         width = w,
         fullscreen = true,
         title = _("Battleships"),
-        subtitle = m.peer and T(_("Opponent: %1"), m.peer) or nil,
+        subtitle = m.peer and (m.score.me + m.score.peer > 0
+            and T(_("Opponent: %1 · You %2 : %3"), m.peer, m.score.me, m.score.peer)
+            or T(_("Opponent: %1"), m.peer)) or nil,
         with_bottom_line = true,
         close_callback = function() self:onClose() end,
         show_parent = self,
@@ -1157,19 +1167,37 @@ local function connection_lost(reason, resumable)
     end
 end
 
+-- %1 = square, %2 = the sunk ship's name
 local RESULT_TEXT = {
     miss = _("%1: miss."),
     hit = _("%1: hit! Fire again."),
-    sunk = _("%1: hit and sunk! Fire again."),
-    won = _("%1: hit and sunk!"),
+    sunk = _("%1: hit, the %2 goes down! Fire again."),
+    won = _("%1: hit, the %2 goes down!"),
 }
 
+-- %1 = opponent, %2 = square, %3 = the sunk ship's name
 local INCOMING_TEXT = {
     miss = _("%1 fired at %2: miss."),
     hit = _("%1 fired at %2: hit."),
-    sunk = _("%1 fired at %2: your ship is sunk."),
-    won = _("%1 fired at %2: your last ship is sunk."),
+    sunk = _("%1 fired at %2: your %3 goes down."),
+    won = _("%1 fired at %2: your %3 goes down, your last ship."),
 }
+
+-- Ship names by shape (the classic fleet's two ships of 3 look the same: both cruisers).
+local SHIP_NAMES = {
+    line5 = _("aircraft carrier"),
+    line4 = _("battleship"),
+    line3 = _("cruiser"),
+    line2 = _("destroyer"),
+    carrier = _("aircraft carrier"),
+    cruiser = _("cruiser"),
+    battleship = _("battleship"),
+    destroyer = _("destroyer"),
+    submarine = _("submarine"),
+}
+local function ship_name(ship)
+    return ship and SHIP_NAMES[ship.shape] or _("ship")
+end
 
 --- Updates the screen after a match event (see battleshipswifi/match.lua).
 function Battleships.onGameEvent(ev)
@@ -1189,13 +1217,13 @@ function Battleships.onGameEvent(ev)
         game.message = ev.turn == "me" and _("The battle begins. You fire first.")
             or T(_("The battle begins. %1 fires first."), m.peer)
     elseif t == "result" then
-        game.message = T(RESULT_TEXT[ev.result], Board.label(ev.x, ev.y))
+        game.message = T(RESULT_TEXT[ev.result], Board.label(ev.x, ev.y), ship_name(ev.ship))
         if game.screen then
             game.screen:update{ board = "target", cells = game.screen:animateShot("target", ev) }
             return
         end
     elseif t == "incoming" then
-        game.message = T(INCOMING_TEXT[ev.result], m.peer, Board.label(ev.x, ev.y))
+        game.message = T(INCOMING_TEXT[ev.result], m.peer, Board.label(ev.x, ev.y), ship_name(ev.ship))
         if game.screen then
             game.screen:update{ board = "own", cells = game.screen:animateShot("own", ev) }
             return

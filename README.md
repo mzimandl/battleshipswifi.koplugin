@@ -32,6 +32,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
 - Placing: the fleet starts at random positions (**Random** shuffles it again). Tap a ship to select it, tap it again to turn it (a quarter turn clockwise, or the next one that fits), tap the water to move it there (the leftmost square of its top row lands on the square tapped). While a ship is selected, the squares it doesn't fit on are shaded, and the status line says when it has no room to turn. **Ready** when done.
 - The host's device picks who fires first. After a hit you fire again; after a miss it's the opponent's turn.
 - Water around a sunk ship is marked automatically. Whoever sinks the whole enemy fleet first wins; the loser then sees the winner's remaining ships. **Play again** starts a new round once both players tap it.
+- A sunk ship is named in the message (aircraft carrier, battleship, cruiser, destroyer, submarine; the classic fleet's two ships of 3 are both cruisers). After each game, both players' numbers: shots, hits, hit rate and the longest series of hits. The title shows the score of the games played against the same opponent (Play again keeps it).
 
 Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined. Below the opponent's board, their fleet in small: ships still afloat dark, sunk ones light and struck through.
 

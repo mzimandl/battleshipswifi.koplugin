@@ -10,7 +10,9 @@ ship lets the shooter fire again; a miss passes the turn.
 receive() and the local actions return an event table for the UI (or nil when
 nothing visible changed); on a protocol error receive() returns nil, error.
 Events: joined (fleet_changed when the guest had to take the host's fleet), peer_ready, start, incoming (opponent's shot), result (ours),
-fleet, rematch_request, rematch, left, resumed.
+fleet, rematch_request, rematch, left, resumed. result and incoming carry the
+sunk ship (sunk/won). `score` counts the games won against this opponent,
+`stats` this game's shots (record()).
 
 Resuming after a lost connection (see protocol.lua): the game lines each side
 sends are kept in `log`, the ones received counted in `received`; resume()
@@ -39,6 +41,7 @@ function M.new(opts)
         log = {}, -- game lines we sent (since the opponent joined)
         received = 0, -- game lines received
         started = false, -- a battle has started (with this opponent)
+        score = { me = 0, peer = 0 }, -- games won against this opponent
     }, Match)
     if m.role == "host" then
         local chars, id = "abcdefghijklmnopqrstuvwxyz0123456789", {}
@@ -65,6 +68,25 @@ function Match:reset()
     self.rematch, self.peer_rematch = false, false
     self.turn, self.pending, self.winner = nil, nil, nil
     self.last_fired, self.last_incoming = nil, nil
+    -- this game's shots: count, hits (sunk ones too), the series of hits now and the longest
+    self.stats = {
+        me = { shots = 0, hits = 0, series = 0, best = 0 },
+        peer = { shots = 0, hits = 0, series = 0, best = 0 },
+    }
+end
+
+-- Counts a shot of "me" or "peer"; a won game goes to the score.
+function Match:record(side, result)
+    local st = self.stats[side]
+    st.shots = st.shots + 1
+    if result == "miss" then
+        st.series = 0
+    else
+        st.hits = st.hits + 1
+        st.series = st.series + 1
+        st.best = math.max(st.best, st.series)
+    end
+    if result == "won" then self.score[side] = self.score[side] + 1 end
 end
 
 function Match:send(cmd, ...)
@@ -108,6 +130,7 @@ function Match:drop_peer()
     self.peer = nil
     self.peer_ready = false
     self.log, self.received, self.peer_resumes = {}, 0, nil
+    self.score = { me = 0, peer = 0 }
 end
 
 function Match:begin(first)
@@ -169,6 +192,7 @@ function handlers:HELLO(words, rest)
     end
     self.peer = Protocol.clean_name(rest:match("^%S+%s*(.*)$"))
     self.log, self.received, self.peer_resumes = {}, 0, nil
+    self.score = { me = 0, peer = 0 }
     self:send("WELCOME", Protocol.VERSION, self.fleet, self.name)
     self:send("SESSION", self.session)
     if self.ready then self:send("READY") end
@@ -255,10 +279,11 @@ function handlers:SHOT(words)
     if ship then self:send("RESULT", x, y, result, Board.encode_ship(ship))
     else self:send("RESULT", x, y, result) end
     if result == "miss" then self.turn = "me" end
+    self:record("peer", result)
     if result == "won" then
         self.phase, self.winner = "over", "peer"
     end
-    return { type = "incoming", x = x, y = y, result = result }
+    return { type = "incoming", x = x, y = y, result = result, ship = ship }
 end
 
 function handlers:RESULT(words)
@@ -276,12 +301,13 @@ function handlers:RESULT(words)
     self.pending = nil
     self.last_fired = { x, y }
     self.target:apply(x, y, result, ship)
+    self:record("me", result)
     if result == "miss" then self.turn = "peer" end
     if result == "won" then
         self.phase, self.winner = "over", "me"
         self:send("FLEET", self.board:encode_fleet())
     end
-    return { type = "result", x = x, y = y, result = result }
+    return { type = "result", x = x, y = y, result = result, ship = ship }
 end
 
 function handlers:FLEET(words)
