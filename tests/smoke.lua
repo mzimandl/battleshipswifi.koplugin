@@ -27,7 +27,16 @@ stub("ffi/util", { template = function(s, ...)
     local a = { ... }
     return (s:gsub("%%(%d)", function(i) return tostring(a[tonumber(i)]) end))
 end })
-stub("ffi/blitbuffer", setmetatable({}, { __index = function(_, k) return k end }))
+-- a buffer that takes any painting call; counts them in `calls`
+local function fake_bb()
+    local bb = { calls = 0 }
+    return setmetatable(bb, { __index = function(t, k)
+        if k == "getType" then return function() return 1 end end
+        return function() t.calls = t.calls + 1 end
+    end })
+end
+local screen_bb = fake_bb()
+stub("ffi/blitbuffer", setmetatable({ new = function() return fake_bb() end }, { __index = function(_, k) return k end }))
 stub("datastorage", { getSettingsDir = function() return root .. "/settings" end })
 stub("logger", { warn = print, info = function() end, dbg = function() end })
 local kindle = false
@@ -36,7 +45,7 @@ stub("device", {
     isKindle = function() return kindle end,
     hasKeys = function() return true end,
     input = { group = { Back = "Back" } },
-    screen = { getWidth = function() return 600 end, getHeight = function() return 800 end },
+    screen = { getWidth = function() return 600 end, getHeight = function() return 800 end, bb = screen_bb },
 })
 stub("ui/font", { getFace = function(_, name, size) return { name = name, size = size } end })
 stub("ui/geometry", { new = function(_, o) return o end })
@@ -78,6 +87,7 @@ stub("ui/time", { now = function() return clock end, to_s = function(t) return t
 local zmqs, standby, closed = {}, 0, {}
 local last_close_refresh
 local tasks, dirty = {}, {}
+local vsyncs, top_widget = 0, nil
 -- runs the scheduled tasks (animation frames)
 local function run_tasks()
     local n = 0
@@ -97,6 +107,8 @@ stub("ui/uimanager", {
         if w and w.onCloseWidget then w:onCloseWidget() end
     end,
     forceRePaint = function() end,
+    waitForVSync = function() vsyncs = vsyncs + 1 end,
+    getTopmostVisibleWidget = function() return top_widget or shown[#shown] end,
     setDirty = function(_, w, kind, region) table.insert(dirty, { w = w, kind = kind, region = region }) end,
     insertZMQ = function(_, z) table.insert(zmqs, z); return z end,
     removeZMQ = function(_, z) for i = #zmqs, 1, -1 do if zmqs[i] == z then table.remove(zmqs, i) end end end,
@@ -203,10 +215,9 @@ local function buttons(screen)
     return out
 end
 local function paint(board)
-    local calls = 0
-    local bb = setmetatable({}, { __index = function() return function() calls = calls + 1 end end })
+    local bb = fake_bb()
     board:paintTo(bb, 5, 7)
-    return calls
+    return bb.calls
 end
 
 local Battleships = dofile("main.lua")
@@ -316,7 +327,12 @@ eq(screen.anim and screen.anim.kind, "hit", "hit animated")
 eq(boards(screen)[1].anim, screen.anim, "on the opponent's board")
 paint(boards(screen)[1])
 dirty = {}
+local blits = screen_bb.calls
+vsyncs = 0
 eq(run_tasks(), 5, "four more frames and the cleanup")
+eq(vsyncs, 5, "every frame waits for the previous refresh")
+eq(screen_bb.calls - blits, 5, "every frame: one copy of the region to the screen")
+eq(dirty[1].w, nil, "frames don't repaint the whole game screen")
 local kinds = {}
 for _i, d in ipairs(dirty) do kinds[#kinds + 1] = d.kind end
 eq(table.concat(kinds, " "), "fast fast fast fast ui", "fast refreshes, then a normal one")
@@ -340,6 +356,33 @@ eq(screen.anim, nil, "no animation when off")
 item("animations").callback()
 eq(item("animations").checked_func(), true, "animations back on")
 eq(boards(screen)[1].last[1] .. boards(screen)[1].last[2], "00", "last shot outlined")
+-- a dialog over the game: no frames over it
+-- a miss: ours if it's our turn, else the opponent's on our board
+local expect
+if screen:statusText():find("Your turn", 1, true) then
+    local target = boards(screen)[1].target
+    local free
+    for y = 9, 0, -1 do for x = 9, 0, -1 do if not free and target:can_fire(x, y) then free = { x, y } end end end
+    boards(screen)[1].on_tap(free[1], free[2])
+    client.incoming = { ("RESULT %d %d miss\n"):format(free[1], free[2]) }
+    expect = "target miss"
+else
+    local own_board = boards(screen)[2].board
+    local water
+    for y = 9, 0, -1 do for x = 9, 0, -1 do
+        if not water and not own_board:ship_at(x, y) and not own_board.shots[y][x] then water = { x, y } end
+    end end
+    client.incoming = { ("SHOT %d %d\n"):format(water[1], water[2]) }
+    expect = "own miss"
+end
+tick()
+eq(screen.anim and screen.anim.board .. " " .. screen.anim.kind, expect, "miss animated")
+top_widget = {}
+dirty = {}
+eq(run_tasks(), 1, "covered: the animation stops")
+eq(dirty[1].w == screen and dirty[1].kind == "ui", true, "and the game screen is refreshed normally")
+eq(screen.anim, nil, "no animation left")
+top_widget = nil
 
 -- the opponent leaves
 client.incoming = { "BYE\n" }

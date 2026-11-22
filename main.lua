@@ -215,6 +215,26 @@ end
 -- A sunk ship blows up in up to SINK_STEPS steps along its squares, then sinks.
 local FRAME_TIME = 0.15 -- seconds
 local SINK_STEPS = 4
+
+-- Off-screen buffers a board with an animation is painted into first, so that
+-- the effects stay on the board and the screen only ever gets finished pixels.
+-- One per size (both boards), reused; freed when the game ends.
+local canvases = {}
+local function canvas_for(w, h, like)
+    local key = w .. "x" .. h .. "/" .. tostring(like:getType())
+    local canvas = canvases[key]
+    if not canvas then
+        canvas = Blitbuffer.new(w, h, like:getType())
+        canvases[key] = canvas
+    end
+    return canvas
+end
+local function free_canvases()
+    for key, canvas in pairs(canvases) do
+        canvas:free()
+        canvases[key] = nil
+    end
+end
 local function frame_count(kind, cells)
     if kind == "miss" then return 6 end
     if kind == "hit" then return 5 end
@@ -291,9 +311,11 @@ end
 function BoardWidget:region(cells)
     local c = self.cell
     local x0, y0, x1, y1 = bounds(cells, 1, -1)
+    local x, y = c * (x0 + 1), c * (y0 + 1) -- within the widget
     return Geom:new{
-        x = self.dimen.x + c * (x0 + 1), y = self.dimen.y + c * (y0 + 1),
-        w = c * (x1 - x0 + 1) + 2 * self.line, h = c * (y1 - y0 + 1) + 2 * self.line,
+        x = self.dimen.x + x, y = self.dimen.y + y,
+        w = math.min(c * (x1 - x0 + 1) + 2 * self.line, self.dimen.w - x),
+        h = math.min(c * (y1 - y0 + 1) + 2 * self.line, self.dimen.h - y),
     }
 end
 
@@ -533,6 +555,26 @@ end
 
 function BoardWidget:paintTo(bb, x, y)
     self.dimen.x, self.dimen.y = x, y
+    if not self.anim then return self:paintBoard(bb, x, y) end
+    -- an animation: paint into a canvas first, so that its effects stay on the board
+    local canvas = canvas_for(self.dimen.w, self.dimen.h, bb)
+    self:paintBoard(canvas, 0, 0)
+    bb:blitFrom(canvas, x, y, 0, 0, self.dimen.w, self.dimen.h)
+end
+
+--- Puts the current animation frame (or, with anim = nil, the board as it is)
+-- on the screen: only the animation's region is copied there from the canvas,
+-- the screen's other pixels stay untouched. Returns the region.
+function BoardWidget:paintRegion(cells)
+    local region = self:region(cells)
+    local bb = Screen.bb
+    local canvas = canvas_for(self.dimen.w, self.dimen.h, bb)
+    self:paintBoard(canvas, 0, 0)
+    bb:blitFrom(canvas, region.x, region.y, region.x - self.dimen.x, region.y - self.dimen.y, region.w, region.h)
+    return region
+end
+
+function BoardWidget:paintBoard(bb, x, y)
     local c, n = self.cell, Board.SIZE
     bb:paintRect(x, y, self.dimen.w, self.dimen.h, Blitbuffer.COLOR_WHITE)
     for i = 0, n - 1 do
@@ -599,10 +641,22 @@ function GameScreen:animationStep()
     if done then
         self.anim, self.anim_step = nil, nil
         if widget then widget.anim = nil end
-    else
-        UIManager:scheduleIn(FRAME_TIME, self.anim_step)
     end
-    if widget then UIManager:setDirty(self, done and "ui" or "fast", widget:region(anim.cells)) end
+    if not widget then return end
+    if UIManager:getTopmostVisibleWidget() ~= self then
+        -- something is shown over the game: no frames over it, just the end state
+        self:stopAnimation()
+        widget.anim = nil
+        UIManager:setDirty(self, "ui", widget:region(anim.cells))
+        return
+    end
+    -- Only the board's region changes, straight on the screen: repainting the
+    -- whole game screen makes it white for a moment before the content is
+    -- painted. And not while the e-ink controller may still be reading the
+    -- screen for the previous refresh: that tears the picture.
+    UIManager:waitForVSync()
+    UIManager:setDirty(nil, done and "ui" or "fast", widget:paintRegion(anim.cells))
+    if not done then UIManager:scheduleIn(FRAME_TIME, self.anim_step) end
 end
 
 --- Animates a shot's result (event "result" on the target board, "incoming" on ours).
@@ -623,6 +677,15 @@ end
 
 function GameScreen:onCloseWidget()
     self:stopAnimation()
+end
+
+--- The whole screen is painted into a canvas, then copied to the screen in one
+-- go: painted straight there, it would go white for a moment (the frame's
+-- background) while the e-ink controller may still be reading it.
+function GameScreen:paintTo(bb, x, y)
+    local canvas = canvas_for(self.dimen.w, self.dimen.h, bb)
+    InputContainer.paintTo(self, canvas, 0, 0)
+    bb:blitFrom(canvas, x, y, 0, 0, self.dimen.w, self.dimen.h)
 end
 
 function GameScreen:init()
@@ -851,6 +914,8 @@ function Battleships.endGame()
     end
     kindle_firewall("-D", game.rules)
     local screen = game.screen
+    if screen then screen:stopAnimation() end
+    free_canvases()
     game = {}
     -- the screen covers everything: without a refresh type the display would keep showing it
     if screen then UIManager:close(screen, "full") end
