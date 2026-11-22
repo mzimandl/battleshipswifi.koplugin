@@ -171,14 +171,19 @@ local function blast(bb, cx, cy, r, color, phase, spikes)
     fill_polygon(bb, pts, color)
 end
 
+-- Circles get whole-pixel centres: Blitbuffer's setPixel computes the address as
+-- data + stride * y + x, and with 32-bit LuaJIT (Kindle) stride is a plain
+-- number, so a fractional y shifts the pixel by part of a row (scattered dots).
+local function round(v) return math.floor(v + 0.5) end
+
 local function disc(bb, cx, cy, r, color)
     r = math.max(1, math.floor(r))
-    bb:paintCircle(cx, cy, r, color)
+    bb:paintCircle(round(cx), round(cy), r, color)
 end
 
 local function ring(bb, cx, cy, r, w, color)
     r = math.max(1, math.floor(r))
-    bb:paintCircle(cx, cy, r, color, math.max(1, math.min(r, math.floor(w))))
+    bb:paintCircle(round(cx), round(cy), r, color, math.max(1, math.min(r, math.floor(w))))
 end
 
 --- A flame (hit ship) standing on (cx, cy): black, with a white core. h = height.

@@ -28,11 +28,22 @@ stub("ffi/util", { template = function(s, ...)
     return (s:gsub("%%(%d)", function(i) return tostring(a[tonumber(i)]) end))
 end })
 -- a buffer that takes any painting call; counts them in `calls`
+-- painting calls with fractional coordinates (they scatter pixels on 32-bit LuaJIT)
+local fractional = {}
 local function fake_bb()
     local bb = { calls = 0 }
     return setmetatable(bb, { __index = function(t, k)
         if k == "getType" then return function() return 1 end end
-        return function() t.calls = t.calls + 1 end
+        return function(_self, ...)
+            t.calls = t.calls + 1
+            if k:match("^paint") or k == "blitFrom" then
+                for i, v in ipairs({ ... }) do
+                    if type(v) == "number" and v % 1 ~= 0 then
+                        fractional[#fractional + 1] = k .. " arg " .. i .. " = " .. v
+                    end
+                end
+            end
+        end
     end })
 end
 local screen_bb = fake_bb()
@@ -353,6 +364,26 @@ dirty = {}
 local blits = screen_bb.calls
 vsyncs = 0
 eq(screen.anim.frame, 2, "the hit goes on after the shell")
+-- every frame of every animation paints at whole pixels
+do
+    local bw = boards(screen)[1]
+    local ship = { x = 5, y = 1, shape = "line3", rot = 0, hits = 0 }
+    local kinds = { shell = { { 0, 0 } }, miss = { { 9, 9 } }, hit = { { 4, 4 } }, sunk = { { 5, 1 }, { 6, 1 }, { 7, 1 } } }
+    local saved = bw.anim
+    fractional = {}
+    for kind, cells in pairs(kinds) do
+        local set = {}
+        for _i, c in ipairs(cells) do set[c[2] * 10 + c[1]] = true end
+        local frames = ({ shell = 1, miss = 6, hit = 5, sunk = 6 })[kind]
+        for f = 1, frames do
+            bw.anim = { kind = kind, cells = cells, set = set, ship = ship, frame = f }
+            paint(bw)
+        end
+    end
+    bw.anim = saved
+    paint(bw)
+    eq(#fractional .. " " .. (fractional[1] or ""), "0 ", "no fractional coordinates in painting calls")
+end
 eq(run_tasks(), 4, "three more frames and the cleanup")
 eq(vsyncs, 4, "every frame waits for the previous refresh")
 eq(screen_bb.calls - blits, 4, "every frame: one copy of the region to the screen")
