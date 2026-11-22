@@ -264,8 +264,12 @@ do
 end
 eq(item("name").text_func(), "Your name: Kindle Test", "default name is the device model")
 local host_items = item("host").sub_item_table_func()
-eq(host_items[1].text .. "|" .. host_items[2].text, "Classic ships|Shaped ships", "host picks the fleet")
-eq(host_items[1].checked_func == nil and host_items[2].checked_func == nil, true, "plain items, not radio buttons")
+eq(host_items[1].text .. "|" .. host_items[2].text_func(), "Start game|Ships: Classic ships", "Start game, then the fleet")
+do
+    local fleets = by_id(host_items, "fleet").sub_item_table
+    eq(fleets[1].text .. "|" .. fleets[2].text, "Classic ships|Shaped ships", "fleets to pick")
+    eq(fleets[1].checked_func() and fleets[1].radio and not fleets[2].checked_func(), true, "radio items, classic by default")
+end
 item("name").callback({ updateItems = function() end })
 dialogs[#dialogs].text_value = "  Martin\n "
 dialogs[#dialogs].buttons[1][2].callback()
@@ -712,13 +716,15 @@ eq(#zmqs .. " " .. standby, "0 0", "exit ends the game")
 
 -- Playing against the e-reader ---------------------------------------------------
 local ai_items = item("ai").sub_item_table_func()
-eq(ai_items[1].text .. "|" .. ai_items[2].text, "Classic ships|Shaped ships", "fleets to play against the e-reader")
-eq(ai_items[1].checked_func == nil, true, "plain items")
+eq(ai_items[1].text .. "|" .. by_id(ai_items, "fleet").text_func(), "Start game|Ships: Classic ships",
+    "against the e-reader: Start game and the fleet")
 eq(by_id(ai_items, "ai_level").text_func(), "Difficulty: Normal", "normal difficulty by default")
 by_id(ai_items, "ai_level").sub_item_table[3].callback()
 eq(by_id(item("ai").sub_item_table_func(), "ai_level").text_func(), "Difficulty: Hard", "difficulty saved")
 local sockets_before = #tcps + #udps
-ai_items[2].callback()
+by_id(ai_items, "fleet").sub_item_table[2].callback()
+eq(by_id(item("host").sub_item_table_func(), "fleet").text_func(), "Ships: Shaped ships", "fleet saved, shared")
+by_id(ai_items, "ai_start").callback()
 screen = shown[#shown]
 eq(#tcps + #udps, sockets_before, "no network")
 eq(standby, 0, "the device may doze off against the e-reader")
@@ -770,7 +776,8 @@ do
     eq(by_id(item("ai").sub_item_table_func(), "rules_salvo") ~= nil, true, "the rules against the e-reader too")
     size_item.callback(); salvo_item.callback()
     eq(size_item.checked_func() and salvo_item.checked_func() and not touch_item.checked_func(), true, "12 × 12 and salvo on")
-    by_id(host_menu, "host_classic").callback()
+    by_id(host_menu, "fleet").sub_item_table[1].callback()
+    by_id(host_menu, "host_start").callback()
     screen = shown[#shown]
     eq(boards(screen)[1].n .. " " .. boards(screen)[1].board.size, "12 12", "the host places on 12 × 12")
     hudp = udp_on(7532)
@@ -830,7 +837,8 @@ end
 -- Placing: dragging and mirroring ------------------------------------------------
 do
     local Board = require("battleshipswifi/board")
-    item("ai").sub_item_table_func()[2].callback() -- shaped ships
+    by_id(item("ai").sub_item_table_func(), "fleet").sub_item_table[2].callback() -- shaped ships
+    by_id(item("ai").sub_item_table_func(), "ai_start").callback()
     screen = shown[#shown]
     tick()
     local board = boards(screen)[1].board

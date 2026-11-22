@@ -1874,6 +1874,34 @@ function Battleships:rulesItems()
     }
 end
 
+--- The fleet picked in the menu (setting `fleet`, shared by hosting and the e-reader).
+function Battleships:fleet()
+    local fleet = self.settings:readSetting("fleet")
+    return Board.FLEETS[fleet or ""] and fleet or Board.FLEET_ORDER[1]
+end
+
+--- Start game (`id`_start, calls `start`) and the fleet choice (a submenu like Difficulty).
+function Battleships:startItems(id, start)
+    local fleets = {}
+    for _i, fleet in ipairs(Board.FLEET_ORDER) do
+        table.insert(fleets, {
+            text = FLEET_NAMES[fleet],
+            battleshipswifi_item = "fleet_" .. fleet,
+            checked_func = function() return self:fleet() == fleet end,
+            radio = true,
+            callback = function()
+                self.settings:saveSetting("fleet", fleet)
+                self.settings:flush()
+            end,
+        })
+    end
+    return {
+        { text = _("Start game"), battleshipswifi_item = id .. "_start", callback = start, separator = true },
+        { text_func = function() return T(_("Ships: %1"), FLEET_NAMES[self:fleet()]) end,
+            battleshipswifi_item = "fleet", sub_item_table = fleets, separator = true },
+    }
+end
+
 function Battleships:aiLevel()
     local level = self.settings:readSetting("ai_level")
     return LEVEL_NAMES[level or ""] and level or AI.DEFAULT_LEVEL
@@ -2109,15 +2137,7 @@ end
 function Battleships:gameMenu()
     return {
         { text = _("Play against the e-reader"), battleshipswifi_item = "ai", sub_item_table_func = function()
-            local items = {}
-            for _i, fleet in ipairs(Board.FLEET_ORDER) do
-                table.insert(items, {
-                    text = FLEET_NAMES[fleet],
-                    battleshipswifi_item = "ai_" .. fleet,
-                    callback = function() self:playAgainstReader(fleet) end,
-                })
-            end
-            items[#items].separator = true
+            local items = self:startItems("ai", function() self:playAgainstReader(self:fleet()) end)
             for _i, it in ipairs(self:rulesItems()) do table.insert(items, it) end
             items[#items].separator = true
             local levels = {}
@@ -2141,15 +2161,7 @@ function Battleships:gameMenu()
             return items
         end, separator = true },
         { text = _("Host a game"), battleshipswifi_item = "host", sub_item_table_func = function()
-            local items = {}
-            for _i, fleet in ipairs(Board.FLEET_ORDER) do
-                table.insert(items, {
-                    text = FLEET_NAMES[fleet],
-                    battleshipswifi_item = "host_" .. fleet,
-                    callback = function() self:hostGame(fleet) end,
-                })
-            end
-            items[#items].separator = true
+            local items = self:startItems("host", function() self:hostGame(self:fleet()) end)
             for _i, it in ipairs(self:rulesItems()) do table.insert(items, it) end
             return items
         end },

@@ -24,6 +24,8 @@ return {
     ["You play against the e-reader. Difficulty: %1."] = "Hrajete proti čtečce. Obtížnost: %1.",
     ["Classic ships"] = "Klasické lodě",
     ["Shaped ships"] = "Tvarové lodě",
+    ["Start game"] = "Spustit hru",
+    ["Ships: %1"] = "Lodě: %1",
     ["%1 (%2)"] = "%1 (%2)",
     ["You joined %1's game: %2."] = "Připojeno ke hře hráče %1: %2.",
     ["%1 × %1"] = "%1 × %1",
