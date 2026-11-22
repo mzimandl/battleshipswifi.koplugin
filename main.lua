@@ -1863,10 +1863,23 @@ function Battleships:rulesItems()
             self.settings:flush()
         end
     end
+    local sizes = {}
+    for _i, size in ipairs(Board.SIZES) do
+        table.insert(sizes, {
+            text = T(_("%1 × %1"), size),
+            battleshipswifi_item = "rules_size_" .. size,
+            checked_func = function() return self:gameRules().size == size end,
+            radio = true,
+            callback = function()
+                self.settings:saveSetting("rules_size", size ~= Board.SIZE and size or nil)
+                self.settings:flush()
+            end,
+        })
+    end
     return {
-        { text = T(_("Board %1 × %1"), 12), battleshipswifi_item = "rules_size", keep_menu_open = true,
-            checked_func = function() return self:gameRules().size == 12 end, callback = toggle("rules_size", 12) },
-        { text = _("Salvo: as many shots a turn as ships afloat"), battleshipswifi_item = "rules_salvo",
+        { text_func = function() return T(_("Board: %1 × %1"), self:gameRules().size) end,
+            battleshipswifi_item = "rules_size", sub_item_table = sizes },
+        { text = _("Salvo (a shot per ship afloat)"), battleshipswifi_item = "rules_salvo",
             keep_menu_open = true,
             checked_func = function() return self:gameRules().salvo end, callback = toggle("rules_salvo", true) },
         { text = _("Ships may touch"), battleshipswifi_item = "rules_touch", keep_menu_open = true,

@@ -772,10 +772,14 @@ do
     local host_menu = item("host").sub_item_table_func()
     local size_item, salvo_item, touch_item = by_id(host_menu, "rules_size"), by_id(host_menu, "rules_salvo"),
         by_id(host_menu, "rules_touch")
-    eq(size_item.checked_func() or salvo_item.checked_func() or touch_item.checked_func(), false, "classic rules by default")
+    eq(size_item.text_func(), "Board: 10 × 10", "10 × 10 by default")
+    eq(size_item.sub_item_table[1].checked_func() and size_item.sub_item_table[1].radio and
+        not size_item.sub_item_table[2].checked_func(), true, "sizes as radio items")
+    eq(salvo_item.checked_func() or touch_item.checked_func(), false, "classic rules by default")
     eq(by_id(item("ai").sub_item_table_func(), "rules_salvo") ~= nil, true, "the rules against the e-reader too")
-    size_item.callback(); salvo_item.callback()
-    eq(size_item.checked_func() and salvo_item.checked_func() and not touch_item.checked_func(), true, "12 × 12 and salvo on")
+    size_item.sub_item_table[2].callback(); salvo_item.callback()
+    eq(size_item.text_func(), "Board: 12 × 12", "12 × 12 picked")
+    eq(salvo_item.checked_func() and not touch_item.checked_func(), true, "salvo on")
     by_id(host_menu, "fleet").sub_item_table[1].callback()
     by_id(host_menu, "host_start").callback()
     screen = shown[#shown]
@@ -829,7 +833,7 @@ do
     eq(#shown, shown_before + 1, "Menu shows a dialog")
     eq(shown[#shown].buttons[#shown[#shown].buttons][1].text, "Close", "with Close at least")
     -- back to the classic rules for the rest
-    size_item.callback(); salvo_item.callback()
+    size_item.sub_item_table[1].callback(); salvo_item.callback()
     screen:onClose()
     if shown[#shown].ok_callback then shown[#shown].ok_callback() end
 end
