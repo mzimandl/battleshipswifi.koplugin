@@ -555,6 +555,50 @@ eq(#zmqs, 1, "only the game polled")
 plugin:onExit()
 eq(#zmqs .. " " .. standby, "0 0", "exit ends the game")
 
+-- Playing against the e-reader ---------------------------------------------------
+local ai_items = item("ai").sub_item_table_func()
+eq(ai_items[1].text .. "|" .. ai_items[2].text, "Classic ships|Shaped ships", "fleets to play against the e-reader")
+eq(ai_items[1].checked_func == nil, true, "plain items")
+eq(ai_items[3].text_func(), "Difficulty: Normal", "normal difficulty by default")
+ai_items[3].sub_item_table[3].callback()
+eq(item("ai").sub_item_table_func()[3].text_func(), "Difficulty: Hard", "difficulty saved")
+local sockets_before = #tcps + #udps
+ai_items[2].callback()
+screen = shown[#shown]
+eq(#tcps + #udps, sockets_before, "no network")
+eq(standby, 0, "the device may doze off against the e-reader")
+tick()
+eq(screen.title_bar.subtitle, "Opponent: E-reader", "the e-reader joins")
+eq(screen:statusText():match("^You play against the e%-reader. Difficulty: Hard.") ~= nil, true,
+    "difficulty shown: " .. screen:statusText())
+eq(#boards(screen)[1].board.ships, 6, "shaped fleet")
+buttons(screen)["Ready"].callback()
+tick()
+eq(#boards(screen), 2, "battle against the e-reader")
+local over = false
+for _step = 1, 800 do
+    if buttons(screen)["Play again"] then over = true; break end
+    if screen:statusText():find("Your turn", 1, true) then
+        local target = boards(screen)[1].target
+        local free
+        for y = 0, 9 do for x = 0, 9 do if not free and target:can_fire(x, y) then free = { x, y } end end end
+        boards(screen)[1].on_tap(free[1], free[2])
+    end
+    clock = clock + 0.5
+    tick()
+    run_tasks()
+end
+eq(over, true, "a whole game against the e-reader")
+eq(screen:statusText():find("E-reader won.", 1, true) ~= nil or screen:statusText():find("You won!", 1, true) ~= nil,
+    true, "winner shown: " .. screen:statusText())
+plugin:onSuspend()
+eq(#zmqs, 1, "going to sleep keeps a game against the e-reader")
+buttons(screen)["Play again"].callback()
+tick(2)
+eq(#boards(screen), 1, "the e-reader plays again: placing")
+plugin:onExit()
+eq(#zmqs .. " " .. standby, "0 0", "exit ends it")
+
 -- Settings of the plugin's old name (battleships) are taken over once ---------------
 stores[root .. "/settings/battleshipswifi.lua"] = nil
 stores[root .. "/settings/battleships.lua"] = { name = "Old Name", last_address = "10.0.0.7" }

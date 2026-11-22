@@ -8,6 +8,7 @@ address or by finding it on the local network (UDP broadcast).
 
 -- Own modules must be required at load time: PluginLoader only adds the
 -- plugin folder to package.path while main.lua is being loaded.
+local AI = require("battleshipswifi/ai")
 local Board = require("battleshipswifi/board")
 local L10n = require("battleshipswifi/l10n")
 local Match = require("battleshipswifi/match")
@@ -63,6 +64,13 @@ local CONNECT_TIMEOUT = 5  -- seconds, blocks the UI
 local SEARCH_INTERVAL = 1  -- seconds between DISCOVER broadcasts
 local SEARCH_EXPIRE = 5    -- seconds: games not heard of are dropped from the list
 
+local LEVEL_NAMES = {
+    easy = _("Easy"),
+    normal = _("Normal"),
+    hard = _("Hard"),
+}
+local AI_DELAY = 1.2 -- seconds the e-reader "aims", so that the animations can be seen
+
 local FLEET_NAMES = {
     classic = _("Classic ships"),
     shapes = _("Shaped ships"),
@@ -78,7 +86,8 @@ end
 
 -- The running game and the game search. Module-level, not on the plugin
 -- instance: KOReader makes a new instance for every reader/file manager.
--- game: { role, match, conn, host, ip, screen, zmq, message, lost, last_ping, rules, animations }
+-- game: { role, match, conn, host, ip, screen, zmq, message, lost, last_ping, rules, animations,
+--         ai (AI.player when playing against the e-reader), standby (preventStandby() called) }
 local game = {}
 -- finder: { search, menu, zmq, last_sent, rules }
 local finder = {}
@@ -995,10 +1004,8 @@ function Battleships.endGame()
         game.conn:close()
     end
     if game.host then game.host:close() end
-    if game.zmq then
-        UIManager:removeZMQ(game.zmq)
-        UIManager:allowStandby()
-    end
+    if game.zmq then UIManager:removeZMQ(game.zmq) end
+    if game.standby then UIManager:allowStandby() end
     kindle_firewall("-D", game.rules)
     local screen = game.screen
     if screen then screen:stopAnimation() end
@@ -1049,7 +1056,11 @@ local INCOMING_TEXT = {
 function Battleships.onGameEvent(ev)
     local m = game.match
     local t = ev.type
-    if t == "joined" then
+    if t == "joined" and game.ai then
+        game.message = T(_("You play against the e-reader. Difficulty: %1."), LEVEL_NAMES[game.ai.level])
+    elseif t == "peer_ready" and game.ai then
+        -- (the e-reader is ready at once: keep the message above)
+    elseif t == "joined" then
         game.message = game.role == "host" and T(_("%1 joined the game."), ev.name)
             or T(_("You joined %1's game. Fleet: %2."), ev.name, FLEET_NAMES[m.fleet])
         if ev.fleet_changed and game.screen then game.screen.selected = nil end
@@ -1083,8 +1094,31 @@ function Battleships.onGameEvent(ev)
     if game.screen then game.screen:update() end
 end
 
+-- A line from the opponent (device or e-reader). Returns false when it ended the game.
+local function handle_line(line)
+    local conn = game.conn
+    local ev, perr = game.match:receive(line)
+    if perr then
+        logger.warn("Battleships: protocol error", perr, line)
+        if conn and not ERRORS[perr] then conn:send(Protocol.line("ERROR", "protocol")) end
+        connection_lost(perr)
+        return false
+    end
+    if ev then Battleships.onGameEvent(ev) end
+    return game.conn == conn and game.match ~= nil
+end
+
 local function poll_game()
     local t = now()
+    if game.ai then
+        local ai = game.ai
+        local lines, err = ai:poll(t)
+        if err then logger.warn("Battleships: e-reader player", err) end
+        for _i, line in ipairs(lines) do
+            if game.ai ~= ai or not handle_line(line) then return end
+        end
+        return
+    end
     if game.host then
         local client = game.host:accept()
         if client then
@@ -1103,15 +1137,7 @@ local function poll_game()
     if not conn then return end
     local lines, err = conn:poll(t)
     for _i, line in ipairs(lines or {}) do
-        local ev, perr = game.match:receive(line)
-        if perr then
-            logger.warn("Battleships: protocol error", perr, line)
-            if not ERRORS[perr] then conn:send(Protocol.line("ERROR", "protocol")) end
-            connection_lost(perr)
-            return
-        end
-        if ev then Battleships.onGameEvent(ev) end
-        if game.conn ~= conn then return end -- the event ended the connection
+        if not handle_line(line) then return end -- the line ended the connection
     end
     if not lines then
         connection_lost(err)
@@ -1132,13 +1158,34 @@ function Battleships:startGame(role, fields)
         role = role,
         name = self:playerName(),
         fleet = fields.fleet,
-        send = function(line) if game.conn then game.conn:send(line) end end,
+        send = function(line)
+            if game.conn then game.conn:send(line)
+            elseif game.ai then game.ai:deliver(line) end
+        end,
     }
     game.last_ping = now()
     game.zmq = poller(poll_game, "game")
-    UIManager:preventStandby()
+    if not fields.ai_level then
+        -- network games: the device mustn't doze off while the other one plays
+        UIManager:preventStandby()
+        game.standby = true
+    end
     game.screen = GameScreen:new{}
     UIManager:show(game.screen)
+    if fields.ai_level then
+        game.ai = AI.player{ level = fields.ai_level, name = _("E-reader"), delay = AI_DELAY }
+    end
+end
+
+--- A game against the e-reader (no network), with `fleet` and the level set in the menu.
+function Battleships:playAgainstReader(fleet)
+    Battleships.endGame()
+    self:startGame("host", { fleet = fleet, ai_level = self:aiLevel() })
+end
+
+function Battleships:aiLevel()
+    local level = self.settings:readSetting("ai_level")
+    return LEVEL_NAMES[level or ""] and level or AI.DEFAULT_LEVEL
 end
 
 function Battleships:hostGame(fleet)
@@ -1335,7 +1382,9 @@ function Battleships:showRules()
 
 Players take turns firing at a square of the opponent's board. After a hit you fire again, after a miss it's the opponent's turn. Whoever sinks the whole enemy fleet first wins.
 
-Both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.]]),
+Two players: both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.
+
+One player: Play against the e-reader, on one device and without a network. The e-reader plays easy, normal or hard (Difficulty).]]),
     })
 end
 
@@ -1355,6 +1404,36 @@ function Battleships:mainMenu()
         { text = _("Find a game"), battleshipswifi_item = "find", callback = function() self:findGames() end },
         { text = _("Join by address…"), battleshipswifi_item = "join", callback = function() self:joinByAddress() end,
             separator = true },
+        { text = _("Play against the e-reader"), battleshipswifi_item = "ai", sub_item_table_func = function()
+            local items = {}
+            for _i, fleet in ipairs(Board.FLEET_ORDER) do
+                table.insert(items, {
+                    text = FLEET_NAMES[fleet],
+                    battleshipswifi_item = "ai_" .. fleet,
+                    callback = function() self:playAgainstReader(fleet) end,
+                })
+            end
+            items[#items].separator = true
+            local levels = {}
+            for _i, level in ipairs(AI.LEVELS) do
+                table.insert(levels, {
+                    text = LEVEL_NAMES[level],
+                    battleshipswifi_item = "ai_level_" .. level,
+                    checked_func = function() return self:aiLevel() == level end,
+                    radio = true,
+                    callback = function()
+                        self.settings:saveSetting("ai_level", level)
+                        self.settings:flush()
+                    end,
+                })
+            end
+            table.insert(items, {
+                text_func = function() return T(_("Difficulty: %1"), LEVEL_NAMES[self:aiLevel()]) end,
+                battleshipswifi_item = "ai_level",
+                sub_item_table = levels,
+            })
+            return items
+        end, separator = true },
         { text_func = function() return T(_("Your name: %1"), self:playerName()) end, battleshipswifi_item = "name",
             keep_menu_open = true,
             callback = function(touchmenu_instance) self:editName(touchmenu_instance) end },
@@ -1380,9 +1459,10 @@ function Battleships:addToMainMenu(menu_items)
 end
 
 function Battleships:onSuspend()
-    -- Wi-Fi goes off while the device sleeps: leave instead of timing out.
     stop_finder()
-    Battleships.endGame()
+    -- Wi-Fi goes off while the device sleeps: leave instead of timing out.
+    -- A game against the e-reader just waits.
+    if not game.ai then Battleships.endGame() end
 end
 
 function Battleships:onExit()

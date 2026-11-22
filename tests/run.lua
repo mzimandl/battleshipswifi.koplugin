@@ -361,6 +361,103 @@ host:receive("READY")
 host:drop_peer()
 eq(host.peer == nil and not host.peer_ready, true, "drop_peer waits for another opponent")
 
+-- AI: the e-reader as an opponent ----------------------------------------------
+local AI = require("battleshipswifi/ai")
+-- shots a level needs to sink a whole fleet, on average over `games` boards
+local function shots_needed(level, fleet, games, seed)
+    local r = rng(seed)
+    local total, valid = 0, true
+    for _g = 1, games do
+        local board = Board.new(fleet)
+        board:randomize(r)
+        local t2 = Board.target()
+        for shot = 1, 100 do
+            local x, y = AI.choose(level, t2, fleet, r)
+            if not (x and t2:can_fire(x, y)) then valid = false; break end
+            local res2, sunk_ship = board:shoot(x, y)
+            t2:apply(x, y, res2, sunk_ship)
+            if res2 == "won" then total = total + shot; break end
+            if shot == 100 then valid = false end
+        end
+    end
+    return total / games, valid
+end
+for _f, fleet in ipairs({ "classic", "shapes" }) do
+    local avg = {}
+    for _l, level in ipairs(AI.LEVELS) do
+        local a, valid = shots_needed(level, fleet, 30, 5)
+        avg[level] = a
+        eq(valid, true, fleet .. " " .. level .. ": only unknown squares, the whole fleet sunk")
+    end
+    eq(avg.easy > avg.normal and avg.normal > avg.hard, true,
+        ("%s: harder levels need fewer shots (%.1f, %.1f, %.1f)"):format(fleet, avg.easy, avg.normal, avg.hard))
+end
+do
+    -- after a hit, normal and hard fire next to it
+    local t3 = Board.target()
+    t3:apply(4, 4, "hit")
+    for _i, level in ipairs({ "normal", "hard" }) do
+        local x, y = AI.choose(level, t3, "classic", rng(3))
+        eq(math.abs(x - 4) + math.abs(y - 4), 1, level .. ": next to the hit")
+    end
+    t3:apply(5, 4, "hit")
+    local x, y = AI.choose("normal", t3, "classic", rng(4))
+    eq(y == 4 and (x == 3 or x == 6), true, "normal: along the line of hits")
+    -- hard never fires where no ship afloat fits
+    local t4 = Board.target()
+    for y2 = 0, 9 do for x2 = 0, 9 do
+        if not (y2 == 0 and x2 <= 1) and not (y2 == 9 and x2 == 9) then t4.marks[y2][x2] = "miss" end
+    end end
+    t4.ships = {}
+    for _i, shape in ipairs({ "line5", "line4", "line3", "line3" }) do t4.ships[#t4.ships + 1] = { shape = shape } end
+    x, y = AI.choose("hard", t4, "classic", rng(5))
+    eq(x .. "," .. y, "0,0", "hard: only where the last ship (2 squares) fits")
+    eq(table.concat(AI.afloat(t4, "classic"), ","), "line2", "ships afloat")
+end
+do
+    -- a whole match against the e-reader player, and a rematch
+    local ai = AI.player{ level = "hard", name = "Reader", rand = rng(21) }
+    local human = Match.new{ role = "host", name = "H", fleet = "shapes", rand = rng(22),
+        send = function(l) ai:deliver(l) end }
+    local clock2 = 0
+    local function run(steps)
+        for _s = 1, steps do
+            clock2 = clock2 + 0.5
+            local lines2, err = ai:poll(clock2)
+            assert(not err, err)
+            for _i, l in ipairs(lines2) do
+                local _ev, herr = human:receive(l)
+                assert(not herr, tostring(herr) .. " on " .. l)
+            end
+        end
+    end
+    run(2)
+    eq(human.peer .. " " .. tostring(human.peer_ready) .. " " .. ai.match.fleet, "Reader true shapes",
+        "the e-reader joins with the host's fleet and gets ready")
+    human:set_ready()
+    run(1)
+    eq(human.phase, "battle", "battle against the e-reader")
+    local next_shot = 0
+    for _s = 1, 400 do
+        if human.phase ~= "battle" then break end
+        if human:my_turn() then
+            repeat
+                local x, y = next_shot % 10, math.floor(next_shot / 10)
+                next_shot = next_shot + 1
+            until human.target:can_fire(x, y) and human:fire(x, y)
+        end
+        run(1)
+    end
+    run(1) -- the last RESULT reaches the e-reader
+    eq(human.phase .. ai.match.phase, "overover", "the game against the e-reader ends")
+    eq((human.winner == "me") ~= (ai.match.winner == "me"), true, "one winner")
+    eq(human.winner, "peer", "hard e-reader beats firing square by square")
+    eq(#human.target.ships, 6, "the e-reader's fleet revealed")
+    human:request_rematch()
+    run(2)
+    eq(human.phase .. ai.match.phase .. tostring(human.peer_ready), "placingplacingtrue", "the e-reader plays again")
+end
+
 -- Net with fake sockets ----------------------------------------------------------
 local function fake_tcp(incoming)
     local s = { sent = "", incoming = incoming or {}, closed = false }

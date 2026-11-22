@@ -14,6 +14,13 @@ return {
     ["Save"] = "Uložit",
     ["Rules"] = "Pravidla",
     ["Animations"] = "Animace",
+    ["Play against the e-reader"] = "Hrát proti čtečce",
+    ["Difficulty: %1"] = "Obtížnost: %1",
+    ["Easy"] = "Lehká",
+    ["Normal"] = "Střední",
+    ["Hard"] = "Těžká",
+    ["E-reader"] = "Čtečka",
+    ["You play against the e-reader. Difficulty: %1."] = "Hrajete proti čtečce. Obtížnost: %1.",
     ["Classic ships"] = "Klasické lodě",
     ["Shaped ships"] = "Tvarové lodě",
     ["%1 (%2)"] = "%1 (%2)",
@@ -22,12 +29,16 @@ return {
 
 Players take turns firing at a square of the opponent's board. After a hit you fire again, after a miss it's the opponent's turn. Whoever sinks the whole enemy fleet first wins.
 
-Both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.]] ] =
+Two players: both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.
+
+One player: Play against the e-reader, on one device and without a network. The e-reader plays easy, normal or hard (Difficulty).]] ] =
         [[Flotilu vybírá zakládající hráč. Klasické lodě: pět rovných lodí o 5, 4, 3, 3 a 2 polích. Tvarové lodě: letadlová loď (řada 4 polí a pod jejím středem 2), křižník (kříž z 5 polí), bitevní loď (řada 4 polí a pod ní 1), torpédoborec (L ze 4 polí) a dvě ponorky po 2 polích. Lodě leží na plánu 10 × 10 a nesmějí se dotýkat, ani rohem.
 
 Hráči se střídají ve střelbě na pole soupeřova plánu. Po zásahu střílíte znovu, po minutí je na tahu soupeř. Kdo první potopí celou nepřátelskou flotilu, vyhrává.
 
-Obě zařízení musí být ve stejné síti Wi-Fi. Jeden hráč hru založí, druhý ji najde v Najít hru nebo se připojí podle adresy zobrazené na obrazovce zakládajícího hráče.]],
+Dva hráči: obě zařízení musí být ve stejné síti Wi-Fi. Jeden hráč hru založí, druhý ji najde v Najít hru nebo se připojí podle adresy zobrazené na obrazovce zakládajícího hráče.
+
+Jeden hráč: Hrát proti čtečce, na jednom zařízení a bez sítě. Čtečka hraje lehce, středně nebo těžce (Obtížnost).]],
 
     -- joining
     ["Join by address"] = "Připojit se podle adresy",
