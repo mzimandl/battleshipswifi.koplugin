@@ -14,6 +14,7 @@ return {
     ["Save"] = "Uložit",
     ["Rules"] = "Pravidla",
     ["Animations"] = "Animace",
+    ["Settings"] = "Nastavení",
     ["Play against the e-reader"] = "Hrát proti čtečce",
     ["Difficulty: %1"] = "Obtížnost: %1",
     ["Easy"] = "Lehká",

@@ -2029,12 +2029,17 @@ end
 
 function Battleships:init()
     self.settings = LuaSettings:open(DataStorage:getSettingsDir() .. "/battleshipswifi.lua")
-    if self.settings:readSetting("name") == nil then
-        -- before 0.2.0 the plugin was called battleships: keep the name and the last address
+    if not self.settings:readSetting("migrated") then
+        -- before 0.2.0 the plugin was called battleships: keep the name and the last address, once
+        -- (until 1.1.3 on every start while no name was set, which brought the old address back)
         local old = LuaSettings:open(DataStorage:getSettingsDir() .. "/battleships.lua")
         for _i, key in ipairs({ "name", "last_address" }) do
-            if old:readSetting(key) ~= nil then self.settings:saveSetting(key, old:readSetting(key)) end
+            if self.settings:readSetting(key) == nil and old:readSetting(key) ~= nil then
+                self.settings:saveSetting(key, old:readSetting(key))
+            end
         end
+        self.settings:saveSetting("migrated", true)
+        self.settings:flush()
     end
     self.ui.menu:registerToMainMenu(self)
 end
@@ -2103,22 +2108,6 @@ end
 
 function Battleships:gameMenu()
     return {
-        { text = _("Host a game"), battleshipswifi_item = "host", sub_item_table_func = function()
-            local items = {}
-            for _i, fleet in ipairs(Board.FLEET_ORDER) do
-                table.insert(items, {
-                    text = FLEET_NAMES[fleet],
-                    battleshipswifi_item = "host_" .. fleet,
-                    callback = function() self:hostGame(fleet) end,
-                })
-            end
-            items[#items].separator = true
-            for _i, it in ipairs(self:rulesItems()) do table.insert(items, it) end
-            return items
-        end },
-        { text = _("Find a game"), battleshipswifi_item = "find", callback = function() self:findGames() end },
-        { text = _("Join by address…"), battleshipswifi_item = "join", callback = function() self:joinByAddress() end,
-            separator = true },
         { text = _("Play against the e-reader"), battleshipswifi_item = "ai", sub_item_table_func = function()
             local items = {}
             for _i, fleet in ipairs(Board.FLEET_ORDER) do
@@ -2151,17 +2140,34 @@ function Battleships:gameMenu()
             })
             return items
         end, separator = true },
-        { text_func = function() return T(_("Your name: %1"), self:playerName()) end, battleshipswifi_item = "name",
-            keep_menu_open = true,
-            callback = function(touchmenu_instance) self:editName(touchmenu_instance) end },
-        { text = _("Animations"), battleshipswifi_item = "animations", keep_menu_open = true,
-            checked_func = function() return self:animationsOn() end,
-            callback = function()
-                local on = not self:animationsOn()
-                self.settings:saveSetting("animations", on)
-                self.settings:flush()
-                if game.match then game.animations = on end
-            end },
+        { text = _("Host a game"), battleshipswifi_item = "host", sub_item_table_func = function()
+            local items = {}
+            for _i, fleet in ipairs(Board.FLEET_ORDER) do
+                table.insert(items, {
+                    text = FLEET_NAMES[fleet],
+                    battleshipswifi_item = "host_" .. fleet,
+                    callback = function() self:hostGame(fleet) end,
+                })
+            end
+            items[#items].separator = true
+            for _i, it in ipairs(self:rulesItems()) do table.insert(items, it) end
+            return items
+        end },
+        { text = _("Find a game"), battleshipswifi_item = "find", callback = function() self:findGames() end,
+            separator = true },
+        { text = _("Settings"), battleshipswifi_item = "settings", sub_item_table = {
+            { text_func = function() return T(_("Your name: %1"), self:playerName()) end, battleshipswifi_item = "name",
+                keep_menu_open = true,
+                callback = function(touchmenu_instance) self:editName(touchmenu_instance) end },
+            { text = _("Animations"), battleshipswifi_item = "animations", keep_menu_open = true,
+                checked_func = function() return self:animationsOn() end,
+                callback = function()
+                    local on = not self:animationsOn()
+                    self.settings:saveSetting("animations", on)
+                    self.settings:flush()
+                    if game.match then game.animations = on end
+                end },
+        } },
         { text = _("Rules"), battleshipswifi_item = "rules", keep_menu_open = true,
             callback = function() self:showRules() end },
     }

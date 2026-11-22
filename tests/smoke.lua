@@ -245,10 +245,22 @@ local function by_id(items, id)
         if it.battleshipswifi_item == id then return it end
     end
 end
-local function item(id)
-    for _i, it in ipairs(menu_items.battleshipswifi.sub_item_table_func()) do
-        if it.battleshipswifi_item == id then return it end
+local function item(id) -- also in plain submenus (Settings)
+    local function search(items)
+        for _i, it in ipairs(items) do
+            if it.battleshipswifi_item == id then return it end
+            local found = it.sub_item_table and search(it.sub_item_table)
+            if found then return found end
+        end
     end
+    return search(menu_items.battleshipswifi.sub_item_table_func())
+end
+do
+    local ids = {}
+    for _i, it in ipairs(menu_items.battleshipswifi.sub_item_table_func()) do ids[#ids + 1] = it.battleshipswifi_item end
+    eq(table.concat(ids, " "), "ai host find settings rules", "menu order")
+    eq(by_id(item("settings").sub_item_table, "name") ~= nil and by_id(item("settings").sub_item_table, "animations") ~= nil,
+        true, "name and animations under Settings")
 end
 eq(item("name").text_func(), "Your name: Kindle Test", "default name is the device model")
 local host_items = item("host").sub_item_table_func()
@@ -592,7 +604,7 @@ shown[#shown].ok_callback()
 eq(#zmqs, 0, "Close (and confirm) ends it")
 
 -- Joining by address -----------------------------------------------------------
-item("join").callback()
+plugin:joinByAddress()
 local dialog = dialogs[#dialogs]
 dialog.text_value = "not an address!"
 dialog.buttons[1][2].callback()
@@ -601,7 +613,7 @@ dialog.text_value = "10.0.0.66"
 dialog.buttons[1][2].callback()
 eq(notes[#notes], "Cannot connect to 10.0.0.66: connection refused", "connection refused")
 eq(#zmqs, 0, "no game")
-item("join").callback()
+plugin:joinByAddress()
 dialog = dialogs[#dialogs]
 eq(dialog.input, "10.0.0.66", "last address remembered")
 dialog.text_value = "10.0.0.9:7000"
@@ -632,7 +644,7 @@ plugin:onSuspend()
 eq(#zmqs .. " " .. standby, "0 0", "suspend ends the game")
 
 -- Resuming after a lost connection (guest) ------------------------------------------
-item("join").callback()
+plugin:joinByAddress()
 dialog = dialogs[#dialogs]
 dialog.text_value = "10.0.0.9"
 dialog.buttons[1][2].callback()
@@ -990,6 +1002,11 @@ stores[root .. "/settings/battleships.lua"] = { name = "Old Name", last_address 
 local renamed = Battleships:new{ ui = { menu = { registerToMainMenu = function() end } } }
 eq(renamed:playerName(), "Old Name", "name taken over from battleships.lua")
 eq(renamed.settings:readSetting("last_address"), "10.0.0.7", "last address taken over")
+renamed.settings:saveSetting("name", nil)
+renamed.settings:saveSetting("last_address", "10.0.0.8")
+renamed.settings:flush()
+local again = Battleships:new{ ui = { menu = { registerToMainMenu = function() end } } }
+eq(again.settings:readSetting("last_address"), "10.0.0.8", "only once: a newer address isn't overwritten on the next start")
 
 print(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -5,18 +5,19 @@ The classic Battleships game for two players, each on their own e-reader, over W
 ## Playing
 In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices must be on the same Wi-Fi network.
 
-- **Host a game**: one player picks the fleet (**Classic ships** or **Shaped ships**), opens a game and places their ships right away. The screen shows the device's address.
-- **Find a game**: the other player sees games open on the local network (UDP broadcast), with their fleet, and taps one to join.
-- **Join by address…**: when the search finds nothing (some networks block broadcasts), type the address shown on the host's screen, e.g. `192.168.1.10` (or `192.168.1.10:7531`).
 - **Play against the e-reader**: one player, no network. Pick the fleet; **Difficulty** sets how the e-reader plays:
   - **Easy**: random shots, and after a hit it fires next to it only half of the time (about 63 shots to sink the classic fleet).
   - **Normal**: hunts on a checkerboard and finishes off what it hit, along the line of hits (about 43).
   - **Hard**: for every square, counts the ways the ships still afloat could lie over it, given the misses, the sunk ships and that ships don't touch, and fires at the likeliest one (about 38).
 
   Going to sleep doesn't end this game.
+- **Host a game**: one player picks the fleet (**Classic ships** or **Shaped ships**), opens a game and places their ships right away. The screen shows the device's address.
+- **Find a game**: the other player sees games open on the local network (UDP broadcast), with their fleet, and taps one to join.
+- **Join by address…** (at the bottom of Find a game's list): when the search finds nothing (some networks block broadcasts), type the address shown on the host's screen, e.g. `192.168.1.10` (or `192.168.1.10:7531`). The last address typed is offered next time.
 - **Keys** (for readers without touch, or one hand): the arrows move a cursor on the board (it shows once a key is pressed), **Press** acts on its square like a tap (fires; while placing: picks up, turns, puts down a ship), the page keys step through the squares (in the battle, to the next one not fired at yet). Without arrows, page back steps to the next square and page forward acts. **Menu** shows the screen's buttons (Ready, Random, Mirror, Play again, Close) in a dialog that works with keys.
-- **Your name**: shown to the other player and in the list of games (default: the device model).
-- **Animations** (on by default), on both boards: a miss is a shell, a splash, a water column and spreading ripples (about 0.9 s); a hit is a shell, a flash, a fireball, flying debris and smoke over the fire (0.75 s); a sunk ship blows up square by square, then all at once, breaks up and goes down under the waves (up to about 1 s). Each frame is a fast refresh of the squares and their neighbours; turn them off on slow screens.
+- **Settings**:
+  - **Your name**: shown to the other player and in the list of games (default: the device model).
+  - **Animations** (on by default), on both boards: a miss is a shell, a splash, a water column and spreading ripples (about 0.9 s); a hit is a shell, a flash, a fireball, flying debris and smoke over the fire (0.75 s); a sunk ship blows up square by square, then all at once, breaks up and goes down under the waves (up to about 1 s). Each frame is a fast refresh of the squares and their neighbours; turn them off on slow screens.
 
 ### Rules
 - The host picks the fleet, on a 10 × 10 board:
