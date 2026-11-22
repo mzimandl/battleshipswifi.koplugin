@@ -97,6 +97,47 @@ local game = {}
 -- finder: { search, menu, zmq, last_sent, rules }
 local finder = {}
 
+-- The game saved on disk, to go on after KOReader restarts -----------------------
+-- battleshipswifi_game.lua, key "game": { role, match (Match:snapshot()), ai = { level,
+-- match } (against the e-reader), address (guest), opponent, saved (os.time()) }.
+
+local saved_store
+local function store()
+    saved_store = saved_store or LuaSettings:open(DataStorage:getSettingsDir() .. "/battleshipswifi_game.lua")
+    return saved_store
+end
+
+local function saved_game()
+    local snap = store():readSetting("game")
+    return type(snap) == "table" and type(snap.match) == "table" and snap or nil
+end
+
+local function clear_saved_game()
+    if saved_game() then
+        store():delSetting("game")
+        store():flush()
+    end
+end
+
+--- Saves the running game when it can go on later (against the e-reader, or a
+-- network game that can resume); else drops what was saved.
+local function save_game()
+    local m = game.match
+    if not m or game.lost or not (game.ai or m:can_resume()) then
+        clear_saved_game()
+        return
+    end
+    store():saveSetting("game", {
+        role = game.role,
+        match = m:snapshot(),
+        ai = game.ai and { level = game.ai.level, match = game.ai.match:snapshot() } or nil,
+        address = game.address,
+        opponent = m.peer,
+        saved = os.time(),
+    })
+    store():flush()
+end
+
 -- Kindle firewall --------------------------------------------------------------
 
 local function host_rules(port)
@@ -1073,6 +1114,7 @@ function GameScreen:update(hint)
     local layout = self.layout
     local sunk_before = self.fleet_view and self.fleet_view:sunkCount()
     self:build()
+    save_game() -- every change of the game passes here
     if not hint or layout ~= self.layout then
         UIManager:setDirty(self, "ui")
         return
@@ -1117,7 +1159,15 @@ local ERRORS = {
     resume = _("The game can no longer be resumed."),
 }
 
-function Battleships.endGame()
+--- Ends the game. keep_saved: KOReader is closing, the saved game stays for later
+-- (and the opponent gets no BYE: it waits for us to come back).
+function Battleships.endGame(keep_saved)
+    if keep_saved then
+        save_game()
+        if game.conn then game.conn:close(); game.conn = nil end
+    else
+        clear_saved_game()
+    end
     if game.candidate then game.candidate:close() end
     stop_reconnect()
     if game.conn then
@@ -1411,15 +1461,22 @@ function Battleships:startGame(role, fields)
     game = fields
     game.role = role
     game.animations = self:animationsOn()
-    game.match = Match.new{
-        role = role,
-        name = self:playerName(),
-        fleet = fields.fleet,
-        send = function(line)
-            if game.conn then game.conn:send(line)
-            elseif game.ai then game.ai:deliver(line) end
-        end,
-    }
+    local send = function(line)
+        if game.conn then game.conn:send(line)
+        elseif game.ai then game.ai:deliver(line) end
+    end
+    if fields.restore then
+        game.match = Match.restore(fields.restore.match, { send = send })
+        if not game.match then
+            clear_saved_game()
+            game = {}
+            UIManager:show(InfoMessage:new{ text = _("The saved game cannot be continued.") })
+            return false
+        end
+        game.message = T(_("Continuing the game against %1."), game.match.peer)
+    else
+        game.match = Match.new{ role = role, name = self:playerName(), fleet = fields.fleet, send = send }
+    end
     game.last_ping = now()
     game.zmq = poller(poll_game, "game")
     if not fields.ai_level then
@@ -1430,8 +1487,51 @@ function Battleships:startGame(role, fields)
     game.screen = GameScreen:new{}
     UIManager:show(game.screen)
     if fields.ai_level then
-        game.ai = AI.player{ level = fields.ai_level, name = _("E-reader"), delay = AI_DELAY }
+        local restore = fields.restore and fields.restore.ai
+        game.ai = AI.player{ level = fields.ai_level, name = _("E-reader"), delay = AI_DELAY,
+            restore = restore and restore.match }
+        if not game.ai then
+            Battleships.endGame()
+            UIManager:show(InfoMessage:new{ text = _("The saved game cannot be continued.") })
+            return false
+        end
+        if restore then
+            -- lines that were on the way when it was saved go again (see Match:send_again())
+            game.match:send_again(game.ai.match.received)
+            game.ai.match:send_again(game.match.received)
+        end
     end
+    return true
+end
+
+--- Goes on with the game saved when KOReader closed (see save_game()).
+function Battleships:continueSaved()
+    local snap = saved_game()
+    if not snap then return end
+    if snap.ai then
+        local level = LEVEL_NAMES[snap.ai.level or ""] and snap.ai.level or AI.DEFAULT_LEVEL
+        self:startGame("host", { restore = snap, ai_level = level })
+        return
+    end
+    NetworkMgr:runWhenOnline(function()
+        if game.match then return end
+        local address = snap.address
+        if snap.role == "guest" and not (type(address) == "table" and address.ip and address.port) then
+            clear_saved_game()
+            UIManager:show(InfoMessage:new{ text = _("The saved game cannot be continued.") })
+            return
+        end
+        local rules = snap.role == "host" and host_rules(Protocol.PORT) or guest_rules(address.port)
+        kindle_firewall("-A", rules)
+        if not self:startGame(snap.role, { restore = snap, rules = rules, address = address }) then
+            kindle_firewall("-D", rules)
+            return
+        end
+        -- the opponent's device is waiting for us: host listens again, guest reconnects
+        game.waiting = true
+        if snap.role == "host" then game.rebind_at = 0 else game.reconnect = { next_at = 0 } end
+        game.screen:update()
+    end)
 end
 
 --- A game against the e-reader (no network), with `fleet` and the level set in the menu.
@@ -1646,6 +1746,21 @@ One player: Play against the e-reader, on one device and without a network. The 
 end
 
 function Battleships:mainMenu()
+    local items = {}
+    local snap = not game.match and saved_game()
+    if snap then
+        table.insert(items, {
+            text = T(_("Continue the game against %1"), snap.opponent or "?"),
+            battleshipswifi_item = "continue",
+            callback = function() self:continueSaved() end,
+            separator = true,
+        })
+    end
+    for _i, it in ipairs(self:gameMenu()) do table.insert(items, it) end
+    return items
+end
+
+function Battleships:gameMenu()
     return {
         { text = _("Host a game"), battleshipswifi_item = "host", sub_item_table_func = function()
             local items = {}
@@ -1747,7 +1862,9 @@ end
 
 function Battleships:onExit()
     stop_finder()
-    Battleships.endGame()
+    -- a game that can go on is saved (see save_game()), to be continued after the restart
+    local m = game.match
+    Battleships.endGame(m and not game.lost and (game.ai ~= nil or m:can_resume()))
 end
 
 return Battleships

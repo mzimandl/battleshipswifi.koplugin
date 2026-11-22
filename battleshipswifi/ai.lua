@@ -188,7 +188,8 @@ local Player = {}
 Player.__index = Player
 
 --- opts: level, name, rand, delay (seconds before each shot, so that the
--- human sees what happened). Lines for the human's match come out of poll().
+-- human sees what happened), restore (a snapshot of its match, after a restart;
+-- nil is returned when it is unusable). Lines for the human's match come out of poll().
 function M.player(opts)
     local p = setmetatable({
         level = opts.level or M.DEFAULT_LEVEL,
@@ -197,13 +198,14 @@ function M.player(opts)
         inbox = {},
         outbox = {},
     }, Player)
-    p.match = Match.new{
-        role = "guest",
-        name = opts.name,
-        rand = p.rand,
-        send = function(line) table.insert(p.outbox, (line:gsub("\n$", ""))) end,
-    }
-    p.match:hello()
+    local send = function(line) table.insert(p.outbox, (line:gsub("\n$", ""))) end
+    if opts.restore then -- a snapshot of its match (Match:snapshot())
+        p.match = Match.restore(opts.restore, { send = send, rand = p.rand })
+        if not p.match then return nil end
+    else
+        p.match = Match.new{ role = "guest", name = opts.name, rand = p.rand, send = send }
+        p.match:hello()
+    end
     return p
 end
 

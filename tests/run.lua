@@ -5,6 +5,7 @@ local Board = require("battleshipswifi/board")
 local Protocol = require("battleshipswifi/protocol")
 local Match = require("battleshipswifi/match")
 local Net = require("battleshipswifi/net")
+local AI = require("battleshipswifi/ai")
 
 local passed, failed = 0, 0
 local function eq(actual, expected, name)
@@ -408,7 +409,116 @@ do
     eq(h4.phase == "battle" and not h4:can_resume(), true, "a guest that didn't answer SESSION can't resume")
 end
 
--- protocol errors
+-- saving and restoring (KOReader restarts) ---------------------------------------
+-- Writes a value as Lua source and reads it back, as LuaSettings does with its file.
+local function roundtrip(v)
+    local function ser(x)
+        local t = type(x)
+        if t == "table" then
+            assert(getmetatable(x) == nil, "plain tables only")
+            local parts = {}
+            for k, y in pairs(x) do parts[#parts + 1] = "[" .. ser(k) .. "]=" .. ser(y) end
+            return "{" .. table.concat(parts, ",") .. "}"
+        elseif t == "string" then return string.format("%q", x)
+        elseif t == "number" or t == "boolean" then return tostring(x)
+        end
+        error("can't save a " .. t)
+    end
+    return loadstring("return " .. ser(v))()
+end
+do
+    local h, g, dl, _ev, q = pair(41)
+    g:hello(); dl()
+    h:set_ready(); g:set_ready(); dl()
+    -- play a while
+    local next_shot = { [h] = 0, [g] = 0 }
+    for _i = 1, 30 do
+        local shooter = h:my_turn() and h or g
+        repeat
+            local n = next_shot[shooter]
+            next_shot[shooter] = n + 1
+            local x, y = n % 10, math.floor(n / 10)
+            local fired = shooter.target:can_fire(x, y) and shooter:fire(x, y)
+        until fired
+        dl()
+    end
+    -- the host's KOReader restarts: its match comes back from the saved snapshot
+    local to_guest2 = {}
+    local h2 = Match.restore(roundtrip(h:snapshot()), { send = function(l) table.insert(to_guest2, l) end, rand = rng(42) })
+    eq(h2 ~= nil, true, "restored from a saved snapshot")
+    eq(h2.board:encode_fleet() .. h2.phase .. tostring(h2.turn) .. h2.session .. h2.received .. #h2.log,
+        h.board:encode_fleet() .. h.phase .. tostring(h.turn) .. h.session .. h.received .. #h.log, "same state")
+    local same = true
+    for y = 0, 9 do for x = 0, 9 do
+        if h2.target.marks[y][x] ~= h.target.marks[y][x] or h2.board.shots[y][x] ~= h.board.shots[y][x] then same = false end
+    end end
+    eq(same, true, "same marks and shots")
+    eq(h2:can_resume(), true, "the restored host can resume")
+    -- the guest comes back to the restored host and they play to the end
+    local guest_send = g.send_line
+    g.send_line = function(l) local ev, err = h2:receive((l:gsub("\n$", ""))); assert(not err, err) end
+    h2.send_line = function(l) table.insert(to_guest2, l) end
+    g:resume()
+    local function dl2()
+        while #to_guest2 > 0 do
+            local l = table.remove(to_guest2, 1):gsub("\n$", "")
+            local _e, err = g:receive(l)
+            assert(not err, tostring(err) .. " on " .. l)
+        end
+    end
+    dl2()
+    play(h2, g, dl2)
+    eq(h2.phase .. g.phase, "overover", "the restored game is played to the end")
+    g.send_line = guest_send
+    eq(Match.restore({ role = "host", fleet = "boats" }, {}), nil, "an unusable snapshot is refused")
+    eq(Match.restore(nil, {}), nil, "no snapshot")
+end
+do
+    -- against the e-reader: both matches saved, a SHOT on the way when it was saved
+    local ai = AI.player{ level = "normal", name = "Reader", rand = rng(51) }
+    local human = Match.new{ role = "host", name = "H", fleet = "classic", rand = rng(52), send = function(l) ai:deliver(l) end }
+    local clock3 = 0
+    local function run2(a, hm, steps)
+        for _s = 1, steps do
+            clock3 = clock3 + 1
+            local lines2, err = a:poll(clock3)
+            assert(not err, err)
+            for _i, l in ipairs(lines2) do assert(not select(2, hm:receive(l))) end
+        end
+    end
+    run2(ai, human, 2)
+    human:set_ready()
+    run2(ai, human, 1)
+    local shots = 0
+    while not human:my_turn() and human.phase == "battle" do run2(ai, human, 1) end
+    for i = 0, 99 do
+        if human.target:can_fire(i % 10, math.floor(i / 10)) then human:fire(i % 10, math.floor(i / 10)); break end
+    end
+    -- saved now: the SHOT is still in the e-reader's inbox, it never sees it
+    local saved = roundtrip({ human = human:snapshot(), ai = ai.match:snapshot() })
+    local ai2
+    local human2 = Match.restore(saved.human, { send = function(l) ai2:deliver(l) end })
+    ai2 = AI.player{ level = "normal", rand = rng(53), restore = saved.ai }
+    human2:send_again(ai2.match.received)
+    ai2.match:send_again(human2.received)
+    run2(ai2, human2, 2)
+    eq(human2.pending, nil, "the shot on the way when it was saved gets its result")
+    for _s = 1, 400 do
+        if human2.phase ~= "battle" then break end
+        if human2:my_turn() then
+            shots = shots + 1
+            for i = 0, 99 do
+                if human2.target:can_fire(i % 10, math.floor(i / 10)) then human2:fire(i % 10, math.floor(i / 10)); break end
+            end
+        end
+        run2(ai2, human2, 1)
+    end
+    run2(ai2, human2, 1)
+    eq(human2.phase .. ai2.match.phase, "overover", "the restored game against the e-reader ends")
+    eq(AI.player{ restore = { role = "guest" } }, nil, "an unusable e-reader snapshot is refused")
+end
+
+-- protocol errors-- protocol errors
 host, guest, deliver = pair(3)
 eq(select(2, guest:receive("SHOT 1 1")), "not your turn", "shot before the battle")
 eq(select(2, guest:receive("HELLO 2 x")), "unexpected HELLO", "guest doesn't take HELLO")
@@ -440,7 +550,6 @@ host:drop_peer()
 eq(host.peer == nil and not host.peer_ready, true, "drop_peer waits for another opponent")
 
 -- AI: the e-reader as an opponent ----------------------------------------------
-local AI = require("battleshipswifi/ai")
 -- shots a level needs to sink a whole fleet, on average over `games` boards
 local function shots_needed(level, fleet, games, seed)
     local r = rng(seed)

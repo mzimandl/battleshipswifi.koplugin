@@ -349,6 +349,52 @@ function Match:receive(line)
     return ev, err
 end
 
+-- Saving and restoring (surviving a restart of KOReader) ------------------------
+
+local function copy(v)
+    if type(v) ~= "table" then return v end
+    local out = {}
+    for k, x in pairs(v) do out[k] = copy(x) end
+    return out
+end
+
+-- The fields a snapshot keeps (plain values and tables, no functions).
+local SAVED = { "role", "fleet", "name", "peer", "session", "started", "peer_resumes", "log", "received",
+    "score", "stats", "phase", "ready", "peer_ready", "rematch", "peer_rematch", "turn", "pending", "winner",
+    "last_fired", "last_incoming" }
+
+--- The whole state as plain tables (for LuaSettings).
+function Match:snapshot()
+    local snap = {}
+    for _i, k in ipairs(SAVED) do snap[k] = copy(self[k]) end
+    snap.board = { ships = copy(self.board.ships), shots = copy(self.board.shots) }
+    snap.target = { marks = copy(self.target.marks), ships = copy(self.target.ships), sunk = self.target.sunk }
+    return snap
+end
+
+--- A match from snapshot(); opts: send(line), rand. nil when the snapshot is unusable.
+function M.restore(snap, opts)
+    if type(snap) ~= "table" or not Board.FLEETS[snap.fleet or ""] or (snap.role ~= "host" and snap.role ~= "guest")
+        or type(snap.board) ~= "table" or type(snap.target) ~= "table" then
+        return nil
+    end
+    local m = M.new{ role = snap.role, name = snap.name, fleet = snap.fleet, send = opts.send, rand = opts.rand }
+    for _i, k in ipairs(SAVED) do
+        if snap[k] ~= nil then m[k] = copy(snap[k]) end
+    end
+    m.board = Board.new(snap.fleet)
+    m.board.ships = copy(snap.board.ships or {})
+    for y = 0, Board.SIZE - 1 do m.board.shots[y] = copy((snap.board.shots or {})[y] or {}) end
+    m.target = Board.target()
+    for y = 0, Board.SIZE - 1 do m.target.marks[y] = copy((snap.target.marks or {})[y] or {}) end
+    m.target.ships = copy(snap.target.ships or {})
+    m.target.sunk = snap.target.sunk or 0
+    for _i, ship in ipairs(m.board.ships) do
+        if not Board.decode_ship(Board.encode_ship(ship)) then return nil end
+    end
+    return m
+end
+
 --- Whose turn it is: "me", "peer" or nil.
 function Match:my_turn()
     return self.phase == "battle" and self.turn == "me" and not self.pending

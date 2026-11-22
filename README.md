@@ -40,7 +40,8 @@ Board marks: gray ship = yours (dark gray = selected), light gray = no room for 
 - TCP 7531 (the game, host), UDP 7532 (host answers searches), UDP 7533 (searching device listens for answers).
 - On Kindle the plugin opens these ports in the firewall (iptables) for the time of the game.
 - The device doesn't go to standby during a game.
-- Once the battle has started, a lost connection doesn't end the game (both devices need 0.7.0 or newer): the host waits for its opponent to come back, the other device keeps reconnecting (every 3 s; if the host's address changed, it finds it by searching the network). Going to sleep works the same way: on waking up the game goes on where it was, shots sent while the connection was down included. **Close** gives up. Before the battle, or with an older version, a lost connection ends the game as before; restarting KOReader ends it too.
+- Once the battle has started, a lost connection doesn't end the game (both devices need 0.7.0 or newer): the host waits for its opponent to come back, the other device keeps reconnecting (every 3 s; if the host's address changed, it finds it by searching the network). Going to sleep works the same way: on waking up the game goes on where it was, shots sent while the connection was down included. **Close** gives up. Before the battle, or with an older version, a lost connection ends the game as before.
+- Closing or restarting KOReader (or a crash) doesn't lose such a game, nor a game against the e-reader: it is saved after every move (`settings/battleshipswifi_game.lua`), and the menu then starts with **Continue the game against …**. A network game then waits for the other device as after a lost connection (the other device must still be in the game). Starting another game, or closing this one, drops what was saved.
 
 ## Development
 Protocol version 2 since 0.3.0 (fleets, shaped ships): older versions can't play with it.

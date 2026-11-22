@@ -133,6 +133,7 @@ stub("luasettings", { open = function(_, path)
     return {
         readSetting = function(_, k) return data[k] end,
         saveSetting = function(_, k, v) data[k] = v end,
+        delSetting = function(_, k) data[k] = nil end,
         flush = function() end,
     }
 end })
@@ -724,6 +725,99 @@ eq(#boards(screen), 1, "the e-reader plays again: placing")
 eq(screen.title_bar.subtitle, score_before, "the score stays for the next game")
 plugin:onExit()
 eq(#zmqs .. " " .. standby, "0 0", "exit ends it")
+
+-- Surviving a restart of KOReader -------------------------------------------------
+local game_file = root .. "/settings/battleshipswifi_game.lua"
+local function restarted() return Battleships:new{ ui = { menu = { registerToMainMenu = function() end } } } end
+local function menu_of(pl) local mi = {}; pl:addToMainMenu(mi); return mi.battleshipswifi.sub_item_table_func() end
+local function find_item(items, id) for _i, it in ipairs(items) do if it.battleshipswifi_item == id then return it end end end
+local function marks_of(sc)
+    local n = 0
+    for y = 0, 9 do for x = 0, 9 do if sc.board_widgets.target.target.marks[y][x] then n = n + 1 end end end
+    return n
+end
+local function play_steps(sc, steps)
+    for _step = 1, steps do
+        if buttons(sc)["Play again"] then return true end
+        if sc:statusText():find("Your turn", 1, true) then
+            local target = boards(sc)[1].target
+            local free
+            for y = 0, 9 do for x = 0, 9 do if not free and target:can_fire(x, y) then free = { x, y } end end end
+            boards(sc)[1].on_tap(free[1], free[2])
+        end
+        clock = clock + 0.5
+        tick()
+        run_tasks()
+    end
+end
+-- (the game against the e-reader above ended with onExit: it was saved)
+eq(find_item(menu_of(plugin), "continue") ~= nil, true, "a game closed by Exit can be continued")
+-- against the e-reader
+item("ai").sub_item_table_func()[1].callback()
+eq(stores[game_file].game == nil or stores[game_file].game.match.phase == "placing", true,
+    "a new game replaces what was saved")
+screen = shown[#shown]
+tick()
+buttons(screen)["Ready"].callback()
+tick()
+play_steps(screen, 40)
+local known = marks_of(screen)
+eq(known > 0, true, "some shots fired")
+plugin:onExit()
+eq(type(stores[game_file].game), "table", "the game against the e-reader is saved when KOReader closes")
+eq(#zmqs, 0, "and nothing runs")
+local p2 = restarted()
+local items2 = menu_of(p2)
+eq(items2[1].battleshipswifi_item .. " " .. items2[1].text, "continue Continue the game against E-reader",
+    "after the restart: Continue first in the menu")
+items2[1].callback()
+screen = shown[#shown]
+eq(screen:statusText():match("^Continuing the game against E%-reader.") ~= nil, true, "continued: " .. screen:statusText())
+eq(marks_of(screen), known, "the same board")
+eq(play_steps(screen, 800), true, "the continued game against the e-reader is played to the end")
+screen:onClose()
+eq(stores[game_file].game, nil, "closing a finished game drops what was saved")
+eq(find_item(menu_of(p2), "continue"), nil, "no Continue entry then")
+-- a network game (host)
+find_item(menu_of(p2), "host").sub_item_table_func()[1].callback()
+screen = shown[#shown]
+client = fake_tcp({ "HELLO 2 Guest\n" })
+table.insert(pending_clients, client)
+tick(2)
+session = client.sent:match("SESSION (%w+)\n")
+client.incoming = { "SESSION " .. session .. "\nREADY\n" }
+buttons(screen)["Ready"].callback()
+tick()
+eq(#boards(screen), 2, "network battle")
+p2:onExit()
+eq(client.sent:find("BYE", 1, true), nil, "closing KOReader: no BYE, the guest waits")
+eq(stores[game_file].game and stores[game_file].game.role, "host", "the network game is saved")
+local p3 = restarted()
+local udps_before = #udps
+find_item(menu_of(p3), "continue").callback()
+screen = shown[#shown]
+tick()
+eq(#udps > udps_before, true, "the restored host listens again")
+eq(screen:statusText(), "Continuing the game against Guest.\nWaiting for Guest to come back…", "and waits for the guest")
+local returning = fake_tcp({ "RESUME 2 " .. session .. " 1 Guest\n" })
+table.insert(pending_clients, returning)
+tick(2)
+eq(returning.sent:match("^RESUMED 2") ~= nil, true, "the guest resumes with the restored host")
+eq(screen:statusText():match("^Connection to Guest restored.") ~= nil, true, "restored: " .. screen:statusText())
+screen:onClose()
+shown[#shown].ok_callback()
+eq(stores[game_file].game, nil, "leaving drops the saved game")
+-- a game that can't resume (an older guest without SESSION) isn't saved
+find_item(menu_of(p3), "host").sub_item_table_func()[1].callback()
+screen = shown[#shown]
+client = fake_tcp({ "HELLO 2 Old\nREADY\n" })
+table.insert(pending_clients, client)
+tick(2)
+buttons(screen)["Ready"].callback()
+tick()
+p3:onExit()
+eq(stores[game_file].game, nil, "a game that can't resume isn't saved")
+eq(client.sent:find("BYE", 1, true) ~= nil, true, "and the opponent is told")
 
 -- Settings of the plugin's old name (battleships) are taken over once ---------------
 stores[root .. "/settings/battleshipswifi.lua"] = nil
