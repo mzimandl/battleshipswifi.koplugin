@@ -279,7 +279,7 @@ local screen = shown[#shown]
 eq(screen.covers_fullscreen, true, "game screen shown")
 eq(#zmqs, 1, "game polled")
 eq(standby, 1, "standby prevented")
-eq(screen.title_bar.subtitle, nil, "no opponent yet")
+eq(screen.title_bar.title, "Battleships", "no opponent yet")
 local status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
 eq(status:match("Your address: 192.168.1.20") ~= nil, true, "host address shown")
 eq(#boards(screen), 1, "one board while placing")
@@ -316,7 +316,7 @@ local client = fake_tcp({ "HELLO 4 Guest\n" })
 table.insert(pending_clients, client)
 tick(2)
 eq(client.sent:match("^WELCOME 4 classic 10 Martin\n") ~= nil, true, "host welcomes the guest")
-eq(screen.title_bar.subtitle, "Opponent: Guest", "opponent shown")
+eq(screen.title_bar.title, "Battleships · Opponent: Guest", "opponent shown")
 -- a third device is turned away
 local extra = fake_tcp()
 table.insert(pending_clients, extra)
@@ -368,6 +368,21 @@ status = find_all(screen, function(w) return w.alignment == "center" end)[1].tex
 eq(status:match("^D5: hit! Fire again.") ~= nil, true, "result shown")
 eq(screen.anim and screen.anim.kind, "hit", "hit animated")
 eq(boards(screen)[1].anim, screen.anim, "on the opponent's board")
+-- the next shot comes before this animation ends: its squares still get cleaned up
+do
+    local running = screen.anim
+    dirty = {}
+    screen:animate("own", "miss", { { 0, 0 } })
+    local cleaned = false
+    for _i, d in ipairs(dirty) do if d.kind == "partial" then cleaned = true end end
+    eq(cleaned, true, "an interrupted animation gets its clean-up refresh")
+    -- (put the hit back for the checks below)
+    screen:stopAnimation()
+    screen.anim = running
+    screen.anim_step = function() screen:animationStep() end
+    tasks = { screen.anim_step }
+    boards(screen)[1].anim = running
+end
 paint(boards(screen)[1])
 dirty = {}
 local blits = screen_bb.calls
@@ -399,7 +414,7 @@ eq(screen_bb.calls - blits, 4, "every frame: one copy of the region to the scree
 eq(dirty[1].w, nil, "frames don't repaint the whole game screen")
 local kinds = {}
 for _i, d in ipairs(dirty) do kinds[#kinds + 1] = d.kind end
-eq(table.concat(kinds, " "), "fast fast fast ui", "fast refreshes, then a normal one")
+eq(table.concat(kinds, " "), "fast fast fast partial", "fast refreshes, then a clean-up one")
 eq(dirty[1].region.w, 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line, "only the square and its neighbours are refreshed")
 eq(screen.anim, nil, "animation over")
 eq(boards(screen)[1].anim, nil, "board drawn as usual")
@@ -452,7 +467,7 @@ eq(screen.anim and screen.anim.board .. " " .. screen.anim.kind, expect, "miss a
 top_widget = {}
 dirty = {}
 eq(run_tasks(), 1, "covered: the animation stops")
-eq(dirty[1].w == screen and dirty[1].kind == "ui", true, "and the game screen is refreshed normally")
+eq(dirty[1].w == screen and dirty[1].kind == "partial", true, "and the game screen is refreshed normally")
 eq(screen.anim, nil, "no animation left")
 top_widget = nil
 
@@ -483,7 +498,7 @@ client.incoming = { "CLOSE" }
 tick()
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
 eq(status:match("^Guest left.") ~= nil, true, "guest left before the battle")
-eq(screen.title_bar.subtitle, nil, "waiting for another opponent")
+eq(screen.title_bar.title, "Battleships", "waiting for another opponent")
 hudp = udp_on(7532)
 hudp.inbox = { { "DISCOVER 4", "192.168.1.31", 7533 } }
 tick()
@@ -491,7 +506,7 @@ eq(#hudp.out, 1, "discovery answered again")
 client = fake_tcp({ "HELLO 4 Second\n" })
 table.insert(pending_clients, client)
 tick(2)
-eq(screen.title_bar.subtitle, "Opponent: Second", "another guest joins")
+eq(screen.title_bar.title, "Battleships · Opponent: Second", "another guest joins")
 -- silence → timeout
 clock = clock + 31
 tick()
@@ -599,7 +614,7 @@ status = find_all(screen, function(w) return w.alignment == "center" end)[1].tex
 eq(status:match("Connecting…$") ~= nil, true, "guest waits for WELCOME")
 sock.incoming = { "WELCOME 4 shapes 10 Host\n" }
 tick()
-eq(screen.title_bar.subtitle, "Opponent: Host", "guest joined")
+eq(screen.title_bar.title, "Battleships · Opponent: Host", "guest joined")
 eq(#boards(screen)[1].board.ships, 6, "guest places the host's shaped fleet")
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
 eq(status:match("^You joined Host's game: Shaped ships.") ~= nil, true, "fleet named: " .. status)
@@ -696,7 +711,7 @@ screen = shown[#shown]
 eq(#tcps + #udps, sockets_before, "no network")
 eq(standby, 0, "the device may doze off against the e-reader")
 tick()
-eq(screen.title_bar.subtitle, "Opponent: E-reader", "the e-reader joins")
+eq(screen.title_bar.title, "Battleships · Opponent: E-reader", "the e-reader joins")
 eq(screen:statusText():match("^You play against the e%-reader. Difficulty: Hard.") ~= nil, true,
     "difficulty shown: " .. screen:statusText())
 eq(#boards(screen)[1].board.ships, 6, "shaped fleet")
@@ -722,15 +737,15 @@ eq(screen:statusText():find("E-reader won.", 1, true) ~= nil or screen:statusTex
 eq(screen:statusText():match("You: %d+ of %d+ shots hit %(%d+ %%%), longest series %d+%.\nE%-reader: %d+ of %d+ shots hit")
     ~= nil, true, "numbers of both players after the game: " .. screen:statusText())
 eq(screen:statusText():find("goes down", 1, true), nil, "the last shot's message makes room for them")
-eq(screen.title_bar.subtitle:match("^Opponent: E%-reader · You %d : %d$") ~= nil, true,
-    "score in the title: " .. screen.title_bar.subtitle)
+eq(screen.title_bar.title:match("^Battleships · Opponent: E%-reader · You %d : %d$") ~= nil, true,
+    "score in the title: " .. screen.title_bar.title)
 plugin:onSuspend()
 eq(#zmqs, 1, "going to sleep keeps a game against the e-reader")
-local score_before = screen.title_bar.subtitle
+local score_before = screen.title_bar.title
 buttons(screen)["Play again"].callback()
 tick(2)
 eq(#boards(screen), 1, "the e-reader plays again: placing")
-eq(screen.title_bar.subtitle, score_before, "the score stays for the next game")
+eq(screen.title_bar.title, score_before, "the score stays for the next game")
 plugin:onExit()
 eq(#zmqs .. " " .. standby, "0 0", "exit ends it")
 
@@ -784,7 +799,7 @@ do
     eq(client.sent:match(("SHOT %d %d\n$"):format(screen.cursor[1], screen.cursor[2])) ~= nil, true, "Press fires at the cursor")
     client.incoming = { ("RESULT %d %d miss\n"):format(screen.cursor[1], screen.cursor[2]) }
     tick()
-    eq(screen:statusText():match("Shots left: 4%.$") ~= nil, true, "a salvo shot used: " .. screen:statusText())
+    eq(screen:statusText():match("Your turn: 4 shots left%.$") ~= nil, true, "a salvo shot used, the short text: " .. screen:statusText())
     local fx, fy = screen.cursor[1], screen.cursor[2]
     screen:onKeyStep(1)
     eq(boards(screen)[1].target:can_fire(screen.cursor[1], screen.cursor[2]), true, "page keys step to a square not fired at")

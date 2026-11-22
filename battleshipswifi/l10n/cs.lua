@@ -32,6 +32,9 @@ return {
     ["Salvo: as many shots a turn as ships afloat"] = "Salvy: za tah tolik výstřelů, kolik pluje lodí",
     ["Ships may touch"] = "Lodě se smějí dotýkat",
     ["%1: hit!"] = "%1: zásah!",
+    ["%1 · %2"] = "%1 · %2",
+    ["Your turn."] = "Jste na tahu.",
+    ["Your turn: %1 shots left."] = "Jste na tahu: zbývá výstřelů %1.",
     ["Your turn: tap a square on the opponent's board. Shots left: %1."] = "Jste na tahu: klepněte na pole soupeřova plánu. Zbývá výstřelů: %1.",
     [ [[The host picks the fleet. Classic ships: five straight ships of 5, 4, 3, 3 and 2 squares. Shaped ships: an aircraft carrier (a row of 4 with 2 below the middle), a cruiser (a cross of 5), a battleship (a row of 4 with 1 below), a destroyer (an L of 4) and two submarines of 2. Ships lie on a 10 × 10 board and may not touch, not even at the corners.
 
@@ -71,8 +74,6 @@ Klávesami: šipky (nebo tlačítka pro otáčení stránek) posouvají kurzor p
 
     -- game screen
     ["Opponent: %1"] = "Soupeř: %1",
-    ["Opponent's board"] = "Soupeřův plán",
-    ["Your board"] = "Váš plán",
     ["Place your ships: drag them, or tap a ship to select it, tap it again to turn it, tap the water to move it there."] =
         "Rozmístěte lodě: přetáhněte je prstem, nebo klepnutím loď vyberete, dalším klepnutím ji otočíte, klepnutím na vodu ji tam přesunete.",
     ["Mirror"] = "Zrcadlit",

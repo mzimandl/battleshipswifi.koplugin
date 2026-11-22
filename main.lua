@@ -294,6 +294,9 @@ end
 -- Animations: frame 1 is shown with the result, the next ones every FRAME_TIME.
 -- A sunk ship blows up in up to SINK_STEPS steps along its squares, then sinks.
 local FRAME_TIME = 0.15 -- seconds
+-- The refresh after the last frame: "partial" (the full waveform, not "ui"'s fast
+-- one) clears what the fast frames (black flashes) leave behind.
+local CLEANUP_REFRESH = "partial"
 local SINK_STEPS = 4
 
 -- Off-screen buffers a board with an animation is painted into first, so that
@@ -849,14 +852,21 @@ end
 
 -- Game screen ------------------------------------------------------------------
 
-local status_heights = {} -- width → height of 3 status lines
-local function status_min_height(width)
-    if not status_heights[width] then
-        local probe = TextBoxWidget:new{ text = "M\nM\nM", face = Font:getFace("cfont", 18), width = width }
-        status_heights[width] = probe:getSize().h
+-- Share of the room for the boards that the opponent's (the one fired at) gets.
+local TARGET_SHARE = 0.66           -- portrait: of the height
+local TARGET_SHARE_LANDSCAPE = 0.62 -- landscape: of the width
+
+local status_heights = {} -- "width/lines" → height of that many status lines
+local function status_min_height(width, lines)
+    local k = width .. "/" .. lines
+    if not status_heights[k] then
+        local text = {}
+        for i = 1, lines do text[i] = "M" end
+        local probe = TextBoxWidget:new{ text = table.concat(text, "\n"), face = Font:getFace("cfont", 18), width = width }
+        status_heights[k] = probe:getSize().h
         probe:free()
     end
-    return status_heights[width]
+    return status_heights[k]
 end
 
 local GameScreen = InputContainer:extend{
@@ -870,7 +880,9 @@ local GameScreen = InputContainer:extend{
 -- every FRAME_TIME with a fast refresh of just those squares and their
 -- neighbours; a normal refresh cleans up at the end.
 function GameScreen:animate(board, kind, cells, ship, first)
-    self:stopAnimation()
+    -- our shell goes on as the result's animation: nothing to clean up then
+    local old = self.anim
+    self:stopAnimation(not (old and old.kind == "shell" and old.board == board))
     local set = {}
     for _i, c in ipairs(cells) do set[c[2] * Board.KEY + c[1]] = true end
     self.anim = { board = board, kind = kind, cells = cells, set = set, ship = ship, frame = first or 1,
@@ -881,9 +893,23 @@ function GameScreen:animate(board, kind, cells, ship, first)
     end
 end
 
-function GameScreen:stopAnimation()
+--- Stops the running animation. clean: it is being replaced (the next shot came
+-- before it ended): its squares get the clean-up refresh it would have had at
+-- the end, else what its fast frames left stays on the screen.
+function GameScreen:stopAnimation(clean)
     if self.anim_step then UIManager:unschedule(self.anim_step) end
+    local anim = self.anim
     self.anim, self.anim_step = nil, nil
+    local widget = anim and self.board_widgets and self.board_widgets[anim.board]
+    if not widget then return end
+    widget.anim = nil
+    if not clean then return end -- (even frame 1 may have come with a fast refresh)
+    if UIManager:getTopmostVisibleWidget() == self then
+        UIManager:waitForVSync()
+        UIManager:setDirty(nil, CLEANUP_REFRESH, widget:paintRegion(anim.cells))
+    else
+        UIManager:setDirty(self, CLEANUP_REFRESH, widget:region(anim.cells))
+    end
 end
 
 function GameScreen:animationStep()
@@ -901,7 +927,7 @@ function GameScreen:animationStep()
         -- something is shown over the game: no frames over it, just the end state
         self:stopAnimation()
         widget.anim = nil
-        UIManager:setDirty(self, "ui", widget:region(anim.cells))
+        UIManager:setDirty(self, CLEANUP_REFRESH, widget:region(anim.cells))
         return
     end
     -- Only the board's region changes, straight on the screen: repainting the
@@ -909,7 +935,7 @@ function GameScreen:animationStep()
     -- painted. And not while the e-ink controller may still be reading the
     -- screen for the previous refresh: that tears the picture.
     UIManager:waitForVSync()
-    UIManager:setDirty(nil, done and "ui" or "fast", widget:paintRegion(anim.cells))
+    UIManager:setDirty(nil, done and CLEANUP_REFRESH or "fast", widget:paintRegion(anim.cells))
     if not done then UIManager:scheduleIn(FRAME_TIME, self.anim_step) end
 end
 
@@ -1108,10 +1134,15 @@ function GameScreen:statusText()
             end
         end
     elseif m.phase == "battle" then
+        -- short, to leave room for the boards; the whole hint before our first shot
+        local first = m.stats.me.shots == 0
         if m.pending then lines[#lines + 1] = _("Firing…")
         elseif m.turn == "me" and m.rules.salvo then
-            lines[#lines + 1] = T(_("Your turn: tap a square on the opponent's board. Shots left: %1."), m.shots_left)
-        elseif m.turn == "me" then lines[#lines + 1] = _("Your turn: tap a square on the opponent's board.")
+            lines[#lines + 1] = first
+                and T(_("Your turn: tap a square on the opponent's board. Shots left: %1."), m.shots_left)
+                or T(_("Your turn: %1 shots left."), m.shots_left)
+        elseif m.turn == "me" then
+            lines[#lines + 1] = first and _("Your turn: tap a square on the opponent's board.") or _("Your turn.")
         else lines[#lines + 1] = T(_("%1 is aiming…"), m.peer) end
     else
         lines[#lines + 1] = m.winner == "me" and _("You won!") or T(_("%1 won."), m.peer)
@@ -1248,10 +1279,11 @@ function GameScreen:build()
     self.title_bar = TitleBar:new{
         width = w,
         fullscreen = true,
-        title = _("Battleships"),
-        subtitle = m.peer and (m.score.me + m.score.peer > 0
+        -- the opponent and the score in the title itself: no subtitle line, more room for the boards
+        title = m.peer and T(_("%1 · %2"), _("Battleships"), m.score.me + m.score.peer > 0
             and T(_("Opponent: %1 · You %2 : %3"), m.peer, m.score.me, m.score.peer)
-            or T(_("Opponent: %1"), m.peer)) or nil,
+            or T(_("Opponent: %1"), m.peer)) or _("Battleships"),
+        title_shrink_font_to_fit = true,
         with_bottom_line = true,
         close_callback = function() self:onClose() end,
         show_parent = self,
@@ -1262,8 +1294,9 @@ function GameScreen:build()
         width = inner_w,
         alignment = "center",
     }
-    -- room for 3 lines at least, so that the boards stay put when the text changes
-    local status_h = math.max(status:getSize().h, status_min_height(inner_w))
+    -- room for a few lines at least, so that the boards stay put when the text
+    -- changes: 3 while placing (the hints), 2 in the battle (message + turn)
+    local status_h = math.max(status:getSize().h, status_min_height(inner_w, m.phase == "placing" and 3 or 2))
     local row = self:buttonRow()
     local buttons = row and ButtonTable:new{ width = inner_w, buttons = { row }, show_parent = self }
     local title_h = self.title_bar:getSize().h
@@ -1289,24 +1322,22 @@ function GameScreen:build()
         self.board_widgets = { own = boards }
         self.fleet_view = nil
     else
-        local face = Font:getFace("cfont", 16)
-        local label_target = TextWidget:new{ text = _("Opponent's board"), face = face }
-        local label_own = TextWidget:new{ text = _("Your board"), face = face }
-        local label_h = label_target:getSize().h
+        -- no labels: the opponent's board is the big one, with their fleet below it
         local target_size, own_size
         local landscape = w > h
         -- the opponent's fleet in small below their board: size from a first guess of the board
         local fleet_w, fleet_h = fleet_extent(m.fleet)
-        local guess = landscape and math.floor((inner_w - pad) * 0.58) or math.min(inner_w, math.floor(avail_h * 0.6))
+        local guess = landscape and math.floor((inner_w - pad) * TARGET_SHARE_LANDSCAPE)
+            or math.min(inner_w, math.floor(avail_h * TARGET_SHARE))
         local mini = math.max(4, math.min(math.floor(guess / fleet_w), math.floor(guess / (m.rules.size + 1) * 0.45)))
         local gap = Size.padding.default
         local fleet_space = fleet_h * mini + gap
         if landscape then
-            target_size = math.min(math.floor((inner_w - pad) * 0.58), avail_h - label_h - fleet_space)
-            own_size = math.min(inner_w - pad - target_size, avail_h - label_h)
+            target_size = math.min(math.floor((inner_w - pad) * TARGET_SHARE_LANDSCAPE), avail_h - fleet_space)
+            own_size = math.min(inner_w - pad - target_size, avail_h)
         else
-            local h2 = avail_h - 2 * label_h - pad - fleet_space
-            target_size = math.min(inner_w, math.floor(h2 * 0.6))
+            local h2 = avail_h - pad - fleet_space
+            target_size = math.min(inner_w, math.floor(h2 * TARGET_SHARE))
             own_size = math.min(inner_w, h2 - target_size)
         end
         -- no wider than the board
@@ -1329,9 +1360,9 @@ function GameScreen:build()
         local group = landscape and HorizontalGroup or VerticalGroup
         boards = group:new{
             align = landscape and "top" or "center",
-            VerticalGroup:new{ align = "center", label_target, target, VerticalSpan:new{ width = gap }, fleet_view },
+            VerticalGroup:new{ align = "center", target, VerticalSpan:new{ width = gap }, fleet_view },
             landscape and HorizontalSpan:new{ width = pad } or VerticalSpan:new{ width = pad },
-            VerticalGroup:new{ align = "center", label_own, own },
+            VerticalGroup:new{ align = "center", own },
         }
     end
 
