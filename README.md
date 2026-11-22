@@ -29,7 +29,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
                       .#.
     ```
 - Ships may not touch, not even at the corners.
-- Placing: the fleet starts at random positions (**Random** shuffles it again). Tap a ship to select it, tap it again to turn it (a quarter turn clockwise, or the next one that fits), tap the water to move it there (the leftmost square of its top row lands on the square tapped). While a ship is selected, the squares it doesn't fit on are shaded, and the status line says when it has no room to turn. **Ready** when done.
+- Placing: the fleet starts at random positions (**Random** shuffles it again). **Drag a ship** with your finger to move it: while dragging, the board shows where it would land (dark: it fits; hollow squares: no room; its old place light); lifting the finger off the board cancels. Or tap a ship to select it, tap it again to turn it (a quarter turn clockwise, or the next one that fits), tap the water to move it there (the leftmost square of its top row lands on the square tapped). While a ship is selected, the squares it doesn't fit on are shaded, and the status line says when it has no room to turn. With shaped ships, **Mirror** flips the selected ship (an L becomes a J, the battleship's foot goes to the other side). **Ready** when done.
 - The host's device picks who fires first. After a hit you fire again; after a miss it's the opponent's turn.
 - Water around a sunk ship is marked automatically. Whoever sinks the whole enemy fleet first wins; the loser then sees the winner's remaining ships. **Play again** starts a new round once both players tap it.
 - A sunk ship is named in the message (aircraft carrier, battleship, cruiser, destroyer, submarine; the classic fleet's two ships of 3 are both cruisers). After each game, both players' numbers: shots, hits, hit rate and the longest series of hits. The title shows the score of the games played against the same opponent (Play again keeps it).
@@ -44,7 +44,7 @@ Board marks: gray ship = yours (dark gray = selected), light gray = no room for 
 - Closing or restarting KOReader (or a crash) doesn't lose such a game, nor a game against the e-reader: it is saved after every move (`settings/battleshipswifi_game.lua`), and the menu then starts with **Continue the game against …**. A network game then waits for the other device as after a lost connection (the other device must still be in the game). Starting another game, or closing this one, drops what was saved.
 
 ## Development
-Protocol version 2 since 0.3.0 (fleets, shaped ships): older versions can't play with it.
+Protocol version 3 since 1.0.0 (mirrored ships): versions before it (0.9.x and older) can't play with it; version 2 came with 0.3.0 (fleets, shaped ships).
 
 Off-device tests (`lua5.1` works too when luajit isn't installed):
 

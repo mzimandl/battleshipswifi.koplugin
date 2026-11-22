@@ -116,8 +116,8 @@ eq(#Board.around(ship(0, 0, 2, "h")), 4, "water around a corner ship")
 -- Board: shaped ships -----------------------------------------------------------
 local turns = {}
 for shape in pairs(Board.SHAPES) do turns[shape] = #Board.rotations(shape) end
-eq(turns.line3 .. turns.cruiser .. turns.carrier .. turns.battleship .. turns.destroyer, "21444",
-    "distinct quarter turns")
+eq(turns.line3 .. turns.cruiser .. turns.carrier .. turns.battleship .. turns.destroyer, "21488",
+    "distinct orientations (mirrored ones too)")
 eq(Board.fleet_size("classic") .. " " .. Board.fleet_size("shapes"), "17 24", "fleet sizes")
 local function drawn(s)
     local w, h = Board.extent(s)
@@ -134,6 +134,29 @@ eq(drawn(shaped(0, 0, "carrier", 1)), ".#/##/##/.#", "carrier turned clockwise")
 eq(drawn(shaped(0, 0, "destroyer", 2)), "###/..#", "destroyer turned twice")
 eq(drawn(shaped(0, 0, "cruiser")), ".#./###/.#.", "cruiser")
 eq(#Board.around(shaped(3, 3, "cruiser")), 16, "water around a cross")
+-- mirroring
+eq(drawn(shaped(0, 0, "destroyer", Board.mirrored("destroyer", 0))), "..#/###", "destroyer mirrored: an L becomes a J")
+eq(drawn(shaped(0, 0, "battleship", Board.mirrored("battleship", 0))), "####/..#.", "battleship mirrored")
+eq(Board.mirrored("cruiser", 0) .. Board.mirrored("line4", 1) .. Board.mirrored("carrier", 0), "010", "symmetric ones stay")
+eq(#Board.rotations("carrier"), 4, "the carrier's mirror image is one of its turns: nothing new")
+eq(Board.mirrored("destroyer", Board.mirrored("destroyer", 2)), 2, "mirroring twice gives it back")
+eq(Board.encode_ship(Board.decode_ship("2,2,destroyer,7")), "2,2,destroyer,7", "mirrored orientations on the wire")
+eq(Board.decode_ship("2,2,destroyer,8"), nil, "but no more than there are")
+b = Board.new("shapes")
+b.ships = { shaped(4, 4, "destroyer") }
+eq(b:can_mirror(1), true, "a destroyer can be mirrored")
+eq(b:mirror(1), true, "mirrored")
+eq(Board.rotations("destroyer")[b.ships[1].rot + 1].mirrored, true, "it is the mirrored side now")
+local ax, ay = Board.anchor(b.ships[1])
+eq(ax .. "," .. ay, "4,4", "mirrored around its anchor square, which stays")
+for _k = 1, 4 do b:rotate(1); eq(Board.rotations("destroyer")[b.ships[1].rot + 1].mirrored, true, "turning keeps it mirrored") end
+b:mirror(1)
+eq(Board.rotations("destroyer")[b.ships[1].rot + 1].mirrored, false, "mirrored back")
+b.ships = { shaped(0, 0, "cruiser") }
+eq(b:can_mirror(1) or b:mirror(1), false, "a cross can't be mirrored")
+b.ships = { shaped(7, 8, "destroyer"), shaped(0, 0, "submarine") }
+eq(b:mirror(1), true, "mirroring at the edge moves it back onto the board")
+eq(b:fits(b.ships[1], 1), true, "and it fits")
 eq(table.concat({ Board.anchor(shaped(3, 3, "cruiser")) }, ","), "4,3", "anchor: first square of the top row")
 
 b = Board.new("shapes")
@@ -174,8 +197,8 @@ eq(t.marks[2][3], nil, "beyond the water around it: unknown")
 -- Protocol ----------------------------------------------------------------------
 eq(Protocol.clean_name("  Ann\nB\tc  "), "Ann B c", "names lose control characters")
 eq(Protocol.clean_name(string.rep("ž", 30)), string.rep("ž", 24), "names are cut by characters")
-local cmd, words, rest = Protocol.parse("HELLO 2 Žluťoučký kůň")
-eq(cmd .. "|" .. words[1] .. "|" .. rest, "HELLO|2|2 Žluťoučký kůň", "parse")
+local cmd, words, rest = Protocol.parse("HELLO 3 Žluťoučký kůň")
+eq(cmd .. "|" .. words[1] .. "|" .. rest, "HELLO|3|3 Žluťoučký kůň", "parse")
 eq(Protocol.parse("hello"), nil, "commands are upper case")
 local buf = Protocol.buffer()
 eq(#buf:push("PI"), 0, "partial line waits")
@@ -197,6 +220,8 @@ local ann = Protocol.parse_announce(Protocol.announce(7531, "shapes", "Kindle Pa
 eq(ann.port .. " " .. ann.fleet .. " " .. ann.name, "7531 shapes Kindle Paperwhite", "announce round trip")
 eq(Protocol.parse_announce("GAME 99 7531 classic x"), nil, "announce of another version ignored")
 eq(Protocol.parse_announce("GAME 1 7531 x"), nil, "version 1 announce ignored")
+eq(select(2, Match.new{ role = "host", name = "H", send = function() end }:receive("HELLO 2 Older")), "version",
+    "version 2 guest (0.9.x, no mirrored ships) refused")
 eq(select(2, Match.new{ role = "host", name = "H", send = function() end }:receive("HELLO 1 Old")), "version",
     "version 1 guest refused")
 
@@ -340,7 +365,7 @@ do
     local g3 = Match.new{ role = "guest", name = "G", fleet = "shapes", send = function() end }
     local ev3 = g3:receive("WELCOME " .. Protocol.VERSION .. " shapes Host Name")
     eq(tostring(ev3.fleet_changed) .. " " .. g3.peer, "false Host Name", "fleet known from the game list")
-    eq(select(2, Match.new{ role = "guest", name = "G", send = function() end }:receive("WELCOME 2 boats H")),
+    eq(select(2, Match.new{ role = "guest", name = "G", send = function() end }:receive("WELCOME 3 boats H")),
         "bad WELCOME", "unknown fleet refused")
 end
 
@@ -400,11 +425,11 @@ do
     eq(h.phase .. g.phase, "overover", "the resumed game ends normally")
     -- an unknown session is refused
     local h3 = Match.new{ role = "host", name = "H", send = function() end }
-    eq(select(2, h3:receive("RESUME 2 nosuchgame 0 G")), "resume", "RESUME of another game refused")
+    eq(select(2, h3:receive("RESUME 3 nosuchgame 0 G")), "resume", "RESUME of another game refused")
     eq(select(2, g:receive("ERROR resume")), "resume", "the guest learns it can't resume")
     -- an older guest (no SESSION answer): no resuming
     local h4 = Match.new{ role = "host", name = "H", send = function() end }
-    h4:receive("HELLO 2 Old")
+    h4:receive("HELLO 3 Old")
     h4:set_ready(); h4:receive("READY")
     eq(h4.phase == "battle" and not h4:can_resume(), true, "a guest that didn't answer SESSION can't resume")
 end
@@ -521,13 +546,13 @@ end
 -- protocol errors-- protocol errors
 host, guest, deliver = pair(3)
 eq(select(2, guest:receive("SHOT 1 1")), "not your turn", "shot before the battle")
-eq(select(2, guest:receive("HELLO 2 x")), "unexpected HELLO", "guest doesn't take HELLO")
+eq(select(2, guest:receive("HELLO 3 x")), "unexpected HELLO", "guest doesn't take HELLO")
 eq(select(2, host:receive("HELLO 99 x")), "version", "other version refused")
 eq(select(2, host:receive("READY")), "unexpected READY", "READY before HELLO")
 eq(host:receive("FUTURE stuff"), nil, "unknown commands are ignored")
 eq(select(2, host:receive("ERROR busy")), "busy", "ERROR ends the match")
-host:receive("HELLO 2 G")
-eq(select(2, host:receive("HELLO 2 G")), "already joined", "second HELLO refused")
+host:receive("HELLO 3 G")
+eq(select(2, host:receive("HELLO 3 G")), "already joined", "second HELLO refused")
 host:set_ready()
 host:receive("READY")
 eq(host.phase, "battle", "host starts when both are ready")
@@ -544,7 +569,7 @@ eq(host.turn, "peer", "miss passes the turn")
 
 -- the host's opponent leaves before the battle
 host = Match.new{ role = "host", name = "H", send = function() end }
-host:receive("HELLO 2 G")
+host:receive("HELLO 3 G")
 host:receive("READY")
 host:drop_peer()
 eq(host.peer == nil and not host.peer_ready, true, "drop_peer waits for another opponent")
@@ -714,18 +739,18 @@ local fake_socket = {
 local hst = Net.host(fake_socket, 7531)
 local hudp = udps[#udps]
 eq(hudp.port, Protocol.DISCOVERY_PORT, "host listens for discovery")
-hudp.inbox = { { "DISCOVER 2", "10.0.0.9", 7533 }, { "junk", "10.0.0.8", 1 } }
+hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 }, { "junk", "10.0.0.8", 1 } }
 hst:answer("Host", "shapes")
-eq(#hudp.out .. " " .. hudp.out[1][1] .. " " .. hudp.out[1][2], "1 GAME 2 7531 shapes Host 10.0.0.9", "host answers DISCOVER only")
-hudp.inbox = { { "DISCOVER 2", "10.0.0.9", 7533 } }
+eq(#hudp.out .. " " .. hudp.out[1][1] .. " " .. hudp.out[1][2], "1 GAME 3 7531 shapes Host 10.0.0.9", "host answers DISCOVER only")
+hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 } }
 hst:answer(nil)
 eq(#hudp.out, 1, "no answers once the game is full")
 
-hudp.inbox = { { "DISCOVER 2", "10.0.0.9", 7533 } }
+hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 } }
 hst:answer(nil, "shapes", "abc123")
-eq(hudp.out[#hudp.out][1], "RESUMEGAME 2 7531 abc123", "a host waiting for its guest answers with the session")
-eq(Protocol.parse_announce_resume("RESUMEGAME 2 7531 abc123").id, "abc123", "resume announce parsed")
-eq(Protocol.parse_announce("RESUMEGAME 2 7531 abc123"), nil, "not listed as an open game")
+eq(hudp.out[#hudp.out][1], "RESUMEGAME 3 7531 abc123", "a host waiting for its guest answers with the session")
+eq(Protocol.parse_announce_resume("RESUMEGAME 3 7531 abc123").id, "abc123", "resume announce parsed")
+eq(Protocol.parse_announce("RESUMEGAME 3 7531 abc123"), nil, "not listed as an open game")
 
 -- connecting without blocking
 do
@@ -754,12 +779,12 @@ local sudp = udps[#udps]
 eq(sudp.port, Protocol.SEARCH_PORT, "search listens on its port")
 search:send()
 eq(#sudp.out .. " " .. sudp.out[2][2], "2 10.0.0.255", "discover broadcast to both addresses")
-sudp.inbox = { { "GAME 2 7531 shapes Host", "10.0.0.9", 7532 }, { "GAME 2 7531 shapes Host", "10.0.0.9", 7532 } }
+sudp.inbox = { { "GAME 3 7531 shapes Host", "10.0.0.9", 7532 }, { "GAME 3 7531 shapes Host", "10.0.0.9", 7532 } }
 eq(search:poll(1), true, "found a game")
 eq(#search.games .. " " .. search.games[1].name .. " " .. search.games[1].ip .. " " .. search.games[1].fleet,
     "1 Host 10.0.0.9 shapes", "one entry per host, with its fleet")
 eq(search:poll(2), false, "nothing new")
-sudp.inbox = { { "RESUMEGAME 2 7000 abc123", "10.0.0.77", 7532 } }
+sudp.inbox = { { "RESUMEGAME 3 7000 abc123", "10.0.0.77", 7532 } }
 search:poll(3)
 eq(search.resumes.abc123 and (search.resumes.abc123.ip .. ":" .. search.resumes.abc123.port), "10.0.0.77:7000",
     "a host waiting for its guest found, at its new address")

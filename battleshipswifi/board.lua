@@ -3,8 +3,8 @@ Battleships boards. Pure Lua: no KOReader modules.
 
 Coordinates are 0-based: x = column (A–J), y = row (1–10).
 A ship is { shape, x, y, rot, hits }: `shape` is a key of SHAPES, `rot` a
-0-based index into its distinct quarter turns (rotations(shape)), (x, y) the
-top/left corner of its bounding box. Ships may not overlap or touch, not even
+0-based index into its distinct orientations (rotations(shape): the quarter
+turns, then the mirrored ones), (x, y) the top/left corner of its bounding box. Ships may not overlap or touch, not even
 diagonally. Wire form: "x,y,shape,rot".
 ]]
 
@@ -71,28 +71,47 @@ end
 
 local rotation_cache = {}
 
---- Distinct quarter turns of a shape: list of { cells, w, h }, cells
--- normalized (see above); the first one is the shape as defined. nil for an
--- unknown shape.
+--- Distinct orientations of a shape: list of { cells, w, h, mirrored, key },
+-- cells normalized (see above): first the quarter turns clockwise (the first
+-- one is the shape as defined), then those of the mirror image that are new
+-- (mirrored = true; none for symmetric shapes). nil for an unknown shape.
+-- (Protocol version 2 knew only the quarter turns: their indices stay.)
 function M.rotations(shape)
     if rotation_cache[shape] then return rotation_cache[shape] end
     local base = M.SHAPES[shape]
     if not base then return nil end
     local out, seen = {}, {}
-    local cells = base
-    for _turn = 1, 4 do
-        local norm, w, h = normalize(cells)
-        local k = key(norm)
-        if not seen[k] then
-            seen[k] = true
-            out[#out + 1] = { cells = norm, w = w, h = h }
+    local mirror = {}
+    for _i, c in ipairs(base) do mirror[#mirror + 1] = { -c[1], c[2] } end
+    for _side, start in ipairs({ base, mirror }) do
+        local cells = start
+        for _turn = 1, 4 do
+            local norm, w, h = normalize(cells)
+            local k = key(norm)
+            if not seen[k] then
+                seen[k] = true
+                out[#out + 1] = { cells = norm, w = w, h = h, mirrored = start == mirror, key = k }
+            end
+            local turned = {}
+            for _i, c in ipairs(norm) do turned[#turned + 1] = { -c[2], c[1] } end -- clockwise
+            cells = turned
         end
-        local turned = {}
-        for _i, c in ipairs(norm) do turned[#turned + 1] = { -c[2], c[1] } end -- clockwise
-        cells = turned
     end
     rotation_cache[shape] = out
     return out
+end
+
+--- The orientation (rot) of a shape's mirror image of orientation `rot`
+-- (flipped left to right); the same rot for a symmetric one.
+function M.mirrored(shape, rot)
+    local r = M.rotations(shape)[rot + 1]
+    local flipped = {}
+    for _i, c in ipairs(r.cells) do flipped[#flipped + 1] = { -c[1], c[2] } end
+    local k = key((normalize(flipped)))
+    for i, o in ipairs(M.rotations(shape)) do
+        if o.key == k then return i - 1 end
+    end
+    return rot
 end
 
 local function rotation(ship)
@@ -243,9 +262,9 @@ function M.anchor(ship)
     return ship.x + c[1], ship.y + c[2]
 end
 
--- Ship i turned to `rot` with its anchor square on (x, y) (moved back onto the
--- board when that is near the edge); nil when it doesn't fit there.
-function Board:placed(i, x, y, rot)
+--- Ship i turned to `rot` with its anchor square on (x, y), moved back onto
+-- the board when that is near the edge; whether it fits there or not.
+function Board:position(i, x, y, rot)
     local ship = self.ships[i]
     rot = rot or ship.rot
     local r = M.rotations(ship.shape)[rot + 1]
@@ -253,6 +272,12 @@ function Board:placed(i, x, y, rot)
     local moved = { shape = ship.shape, rot = rot, hits = 0, x = x - a[1], y = y - a[2] }
     moved.x = math.max(0, math.min(moved.x, M.SIZE - r.w))
     moved.y = math.max(0, math.min(moved.y, M.SIZE - r.h))
+    return moved
+end
+
+-- Ship i placed (see position()); nil when it doesn't fit there.
+function Board:placed(i, x, y, rot)
+    local moved = self:position(i, x, y, rot)
     if self:fits(moved, i) then return moved end
 end
 
@@ -264,16 +289,61 @@ function Board:move(i, x, y)
     return true
 end
 
+-- Orientations of `shape` on the same side as `rot` (mirrored or not), in
+-- clockwise order: after `rot`, or with `from`, starting at `from`.
+local function turns_after(shape, rot, from)
+    local rotations = M.rotations(shape)
+    local side = rotations[rot + 1].mirrored
+    local list = {}
+    for i, r in ipairs(rotations) do
+        if r.mirrored == side then list[#list + 1] = i - 1 end
+    end
+    local start = 1
+    for k, v in ipairs(list) do
+        if v == (from or rot) then start = from and k or k + 1 end
+    end
+    local out = {}
+    for k = 0, #list - 1 do out[#out + 1] = list[(start - 1 + k) % #list + 1] end
+    return out
+end
+
 -- Ship i turned clockwise (one or more quarter turns, the first that fits)
--- around its anchor square, or nil.
+-- around its anchor square, or nil. Turning never mirrors it.
 function Board:turned(i)
     local ship = self.ships[i]
-    local n = #M.rotations(ship.shape)
     local x, y = M.anchor(ship)
-    for step = 1, n - 1 do
-        local turned = self:placed(i, x, y, (ship.rot + step) % n)
-        if turned then return turned end
+    for _k, rot in ipairs(turns_after(ship.shape, ship.rot)) do
+        if rot ~= ship.rot then
+            local turned = self:placed(i, x, y, rot)
+            if turned then return turned end
+        end
     end
+end
+
+--- Whether ship i looks different in a mirror (L, T…; a line or a cross doesn't).
+function Board:can_mirror(i)
+    local ship = self.ships[i]
+    return M.mirrored(ship.shape, ship.rot) ~= ship.rot
+end
+
+-- Ship i mirrored around its anchor square (turned further, if needed, to fit), or nil.
+function Board:mirrored(i)
+    local ship = self.ships[i]
+    local flipped = M.mirrored(ship.shape, ship.rot)
+    if flipped == ship.rot then return nil end
+    local x, y = M.anchor(ship)
+    for _k, rot in ipairs(turns_after(ship.shape, flipped, flipped)) do
+        local moved = self:placed(i, x, y, rot)
+        if moved then return moved end
+    end
+end
+
+--- Mirrors ship i (see mirrored()). Returns true when it fits.
+function Board:mirror(i)
+    local moved = self:mirrored(i)
+    if not moved then return false end
+    self.ships[i] = moved
+    return true
 end
 
 --- Whether ship i can turn where it is.

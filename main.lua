@@ -318,7 +318,11 @@ end
 -- mode "target": target = Board.target(). last = { x, y } is outlined.
 -- anim = { kind = "miss" | "hit" | "sunk", cells, set = { [y * SIZE + x] = true },
 -- ship (sunk), frame } is drawn over its squares and their neighbours (see GameScreen:animate()).
--- on_tap(x, y) makes it tappable.
+-- on_tap(x, y) makes it tappable; on_drag(phase, sx, sy, x, y) lets ships be
+-- dragged ("move" while the finger moves, "drop" when it lifts, "swipe" for a
+-- quick one; sx, sy = the square it started on, x, y = where it is; it returns
+-- whether it took the gesture). drag = { i, ship (where it would land), fits }
+-- is drawn over the board.
 local BoardWidget = InputContainer:extend{
     size = nil,
     mode = "own",
@@ -327,7 +331,9 @@ local BoardWidget = InputContainer:extend{
     selected = nil,
     last = nil,
     anim = nil,
+    drag = nil,
     on_tap = nil,
+    on_drag = nil,
 }
 
 function BoardWidget:init()
@@ -355,11 +361,40 @@ function BoardWidget:init()
         self.cols[i] = TextWidget:new{ text = string.char(65 + i), face = face, padding = 0 }
         self.rows[i] = TextWidget:new{ text = tostring(i + 1), face = face, padding = 0 }
     end
+    self.ges_events = {}
     if self.on_tap then
-        self.ges_events = {
-            TapBoard = { GestureRange:new{ ges = "tap", range = function() return self.dimen end } },
-        }
+        self.ges_events.TapBoard = { GestureRange:new{ ges = "tap", range = function() return self.dimen end } }
     end
+    if self.on_drag then
+        local function board() return self.dimen end
+        -- the finger may lift anywhere (off the board: the drag is cancelled)
+        local function anywhere() return Geom:new{ x = 0, y = 0, w = Screen:getWidth(), h = Screen:getHeight() } end
+        self.ges_events.PanBoard = { GestureRange:new{ ges = "pan", range = board } }
+        self.ges_events.PanReleaseBoard = { GestureRange:new{ ges = "pan_release", range = anywhere } }
+        self.ges_events.SwipeBoard = { GestureRange:new{ ges = "swipe", range = board } }
+    end
+end
+
+--- The square under a screen position (may be off the board).
+function BoardWidget:cellAt(pos)
+    return math.floor((pos.x - self.dimen.x) / self.cell) - 1, math.floor((pos.y - self.dimen.y) / self.cell) - 1
+end
+
+function BoardWidget:onPanBoard(_args, ges)
+    local sx, sy = self:cellAt(ges.start_pos or ges.pos)
+    local x, y = self:cellAt(ges.pos)
+    return self.on_drag("move", sx, sy, x, y)
+end
+
+function BoardWidget:onPanReleaseBoard(_args, ges)
+    local x, y = self:cellAt(ges.pos)
+    return self.on_drag("drop", nil, nil, x, y)
+end
+
+function BoardWidget:onSwipeBoard(_args, ges)
+    local sx, sy = self:cellAt(ges.pos)
+    local x, y = self:cellAt(ges.end_pos or ges.pos)
+    return self.on_drag("swipe", sx, sy, x, y)
 end
 
 function BoardWidget:getSize()
@@ -609,6 +644,8 @@ function BoardWidget:paintCell(bb, px, py, x, y)
             elseif self.board:sunk(i) then
                 self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_BLACK)
                 wreck()
+            elseif self.drag and self.drag.i == i then
+                self:paintHull(bb, px, py, x, y, ship, Blitbuffer.COLOR_GRAY_D) -- where it was
             else
                 local selected = i == self.selected
                 self:paintHull(bb, px, py, x, y, ship,
@@ -688,6 +725,21 @@ function BoardWidget:paintBoard(bb, x, y)
             math.max(2, math.floor(c / 8)), Blitbuffer.COLOR_BLACK)
     end
     if self.anim then self:paintAnim(bb, ox, oy) end
+    if self.drag and self.drag.ship then self:paintDrag(bb, ox, oy) end
+end
+
+--- The dragged ship where it would land: dark when it fits there, else hollow.
+function BoardWidget:paintDrag(bb, ox, oy)
+    local c, m = self.cell, self.inset
+    local ship = self.drag.ship
+    for _i, cell in ipairs(Board.cells(ship)) do
+        local px, py = ox + cell[1] * c, oy + cell[2] * c
+        if self.drag.fits then
+            self:paintHull(bb, px, py, cell[1], cell[2], ship, Blitbuffer.COLOR_GRAY_4, Blitbuffer.COLOR_GRAY_E)
+        else
+            bb:paintBorder(px + m, py + m, c - 2 * m, c - 2 * m, math.max(2, math.floor(c / 16)), Blitbuffer.COLOR_BLACK)
+        end
+    end
 end
 
 function BoardWidget:onCloseWidget()
@@ -899,7 +951,7 @@ function GameScreen:statusText()
     elseif m.phase == "placing" then
         if not m.ready then
             if not self.selected then
-                lines[#lines + 1] = _("Place your ships: tap a ship to select it, tap it again to turn it, tap the water to move it there.")
+                lines[#lines + 1] = _("Place your ships: drag them, or tap a ship to select it, tap it again to turn it, tap the water to move it there.")
             elseif game.match.board:can_rotate(self.selected) then
                 lines[#lines + 1] = _("Tap the water to move the ship, tap the ship to turn it. Shaded squares have no room for it.")
             else
@@ -942,18 +994,28 @@ function GameScreen:buttonRow()
     local close = { text = _("Close"), callback = function() self:onClose() end }
     if game.lost or game.waiting then return { close } end
     if m.phase == "placing" then
-        return {
+        local row = {
             { text = _("Random"), enabled = not m.ready, callback = function()
                 m.board:randomize()
                 self.selected = nil
                 self:update()
             end },
-            { text = _("Ready"), enabled = not m.ready, callback = function()
-                self.selected = nil
-                local ev = m:set_ready()
-                if ev then Battleships.onGameEvent(ev) else self:update() end
-            end },
         }
+        if m.fleet == "shapes" then -- (straight ships look the same in a mirror)
+            table.insert(row, { text = _("Mirror"),
+                enabled = not m.ready and self.selected ~= nil and m.board:can_mirror(self.selected),
+                callback = function()
+                    if not self.selected then return end
+                    if not m.board:mirror(self.selected) then notify(_("The ship cannot be mirrored here.")) end
+                    self:update()
+                end })
+        end
+        table.insert(row, { text = _("Ready"), enabled = not m.ready, callback = function()
+            self.selected = nil
+            local ev = m:set_ready()
+            if ev then Battleships.onGameEvent(ev) else self:update() end
+        end })
+        return row
     elseif m.phase == "over" then
         return {
             { text = _("Play again"), enabled = not m.rematch, callback = function()
@@ -978,6 +1040,52 @@ function GameScreen:onOwnTap(x, y)
         else notify(_("The ship does not fit there. Ships may not touch.")) end
     end
     self:update()
+end
+
+-- Dragging a ship while placing: see BoardWidget's on_drag.
+function GameScreen:onDrag(phase, sx, sy, x, y)
+    local m = game.match
+    if m.phase ~= "placing" or m.ready then return false end
+    local board = m.board
+    local function clamp(v) return math.max(0, math.min(Board.SIZE - 1, v)) end
+    if phase == "drop" then
+        if not self.drag then return false end
+        return self:dropDrag(x, y)
+    end
+    if not self.drag then
+        local i = Board.inside(sx, sy) and board:ship_at(sx, sy)
+        if not i then return false end
+        local ax, ay = Board.anchor(board.ships[i])
+        self.drag = { i = i, dx = sx - ax, dy = sy - ay } -- the square held, from the ship's anchor
+    end
+    if phase == "swipe" then return self:dropDrag(x, y) end
+    local d = self.drag
+    local cx, cy = clamp(x), clamp(y)
+    if d.x == cx and d.y == cy then return true end -- same square: nothing to redraw
+    d.x, d.y = cx, cy
+    d.ship = board:position(d.i, cx - d.dx, cy - d.dy)
+    d.fits = board:fits(d.ship, d.i)
+    -- only the board changes, quickly (as an animation frame)
+    local widget = self.board_widgets.own
+    widget.drag = d
+    UIManager:waitForVSync()
+    UIManager:setDirty(nil, "fast", widget:paintRegion({ { 0, 0 }, { Board.SIZE - 1, Board.SIZE - 1 } }))
+    return true
+end
+
+function GameScreen:dropDrag(x, y)
+    local d = self.drag
+    self.drag = nil
+    if Board.inside(x, y) then
+        local board = game.match.board
+        if board:move(d.i, x - d.dx, y - d.dy) then
+            self.selected = d.i -- ready to be turned
+        else
+            notify(_("The ship does not fit there. Ships may not touch."))
+        end
+    end -- (lifted off the board: nothing moves)
+    self:update()
+    return true
 end
 
 function GameScreen:onTargetTap(x, y)
@@ -1032,8 +1140,9 @@ function GameScreen:build()
     if m.phase == "placing" then
         boards = BoardWidget:new{
             size = math.min(inner_w, avail_h),
-            mode = "own", board = m.board, selected = self.selected,
+            mode = "own", board = m.board, selected = self.selected, drag = self.drag,
             on_tap = not m.ready and function(x, y) self:onOwnTap(x, y) end or nil,
+            on_drag = not m.ready and function(...) return self:onDrag(...) end or nil,
         }
         self.board_widgets = { own = boards }
         self.fleet_view = nil

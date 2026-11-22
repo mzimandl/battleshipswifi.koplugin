@@ -57,8 +57,10 @@ Jeden hráč: Hrát proti čtečce, na jednom zařízení a bez sítě. Čtečka
     ["Opponent: %1"] = "Soupeř: %1",
     ["Opponent's board"] = "Soupeřův plán",
     ["Your board"] = "Váš plán",
-    ["Place your ships: tap a ship to select it, tap it again to turn it, tap the water to move it there."] =
-        "Rozmístěte lodě: klepnutím loď vyberete, dalším klepnutím ji otočíte, klepnutím na vodu ji tam přesunete.",
+    ["Place your ships: drag them, or tap a ship to select it, tap it again to turn it, tap the water to move it there."] =
+        "Rozmístěte lodě: přetáhněte je prstem, nebo klepnutím loď vyberete, dalším klepnutím ji otočíte, klepnutím na vodu ji tam přesunete.",
+    ["Mirror"] = "Zrcadlit",
+    ["The ship cannot be mirrored here."] = "Loď tady nejde zrcadlit.",
     ["Tap the water to move the ship, tap the ship to turn it. Shaded squares have no room for it."] =
         "Klepnutím na vodu loď přesunete, klepnutím na loď ji otočíte. Na světle šedá pole se loď nevejde.",
     ["Tap the water to move the ship. Shaded squares have no room for it, and it has no room to turn here."] =

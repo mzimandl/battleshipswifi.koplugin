@@ -22,11 +22,12 @@ lines the other one missed. A host waiting for its guest to come back answers
 DISCOVER with RESUMEGAME <version> <tcp port> <id> (its address may have changed).
 
 Version 1 (until 0.2.x): ships "x,y,len,dir", no <fleet>.
+Version 2 (0.3.0–0.9.x): no mirrored ship orientations (rot only up to the quarter turns).
 ]]
 
 local M = {}
 
-M.VERSION = 2
+M.VERSION = 3
 M.PORT = 7531           -- TCP, host
 M.DISCOVERY_PORT = 7532 -- UDP, host listens
 M.SEARCH_PORT = 7533    -- UDP, guest listens for answers
