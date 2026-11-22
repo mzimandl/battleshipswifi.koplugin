@@ -395,10 +395,16 @@ eq(dirty[1].region.w, 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line, "
 eq(screen.anim, nil, "animation over")
 eq(boards(screen)[1].anim, nil, "board drawn as usual")
 -- a sunk ship: every square blasts
+eq(screen.fleet_view:sunkCount(), 0, "overview: nothing sunk yet")
 boards(screen)[1].on_tap(4, 4)
+dirty = {}
 client.incoming = { "RESULT 4 4 sunk 3,4,line2,0\n" }
 tick()
 eq(screen.anim and screen.anim.kind .. #screen.anim.cells, "sunk2", "sunk ship animated on all its squares")
+local fv = screen.fleet_view
+eq(table.concat({ tostring(fv.sunk[1]), tostring(fv.sunk[5]) }, " "), "false true", "overview: the 2-square ship struck through")
+eq(refreshes():find("ui@" .. fv.dimen.w, 1, true) ~= nil, true, "overview refreshed after the sunk ship: " .. refreshes())
+eq(fv.dimen.w <= boards(screen)[1].dimen.w, true, "overview no wider than the board")
 paint(boards(screen)[1])
 eq(run_tasks(), 5, "sunk (2 squares): blasts in 2 steps, blow-up, 2 sinking frames, cleanup")
 -- animations off

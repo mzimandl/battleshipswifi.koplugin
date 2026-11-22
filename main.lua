@@ -641,6 +641,80 @@ function BoardWidget:onCloseWidget()
     end
 end
 
+-- Fleet overview ---------------------------------------------------------------
+
+--- The opponent's fleet in small: ships still afloat dark, sunk ones light and
+-- struck through. cell = size of a square; fleet and target = Board.target().
+local FleetWidget = WidgetContainer:extend{
+    fleet = nil,
+    target = nil,
+    square = nil,
+}
+
+--- Squares wide and high a fleet takes in the overview (ships as defined, a square apart).
+local function fleet_extent(fleet)
+    local w, h = -1, 0
+    for _i, shape in ipairs(Board.FLEETS[fleet]) do
+        local r = Board.rotations(shape)[1]
+        w, h = w + r.w + 1, math.max(h, r.h)
+    end
+    return w, h
+end
+
+--- Which of the fleet's ships are sunk: list of booleans, in fleet order.
+local function sunk_ships(fleet, target)
+    local count = {}
+    for _i, ship in ipairs(target.ships) do
+        if not ship.revealed then count[ship.shape] = (count[ship.shape] or 0) + 1 end
+    end
+    local sunk = {}
+    for i, shape in ipairs(Board.FLEETS[fleet]) do
+        sunk[i] = (count[shape] or 0) > 0
+        if sunk[i] then count[shape] = count[shape] - 1 end
+    end
+    return sunk
+end
+
+function FleetWidget:init()
+    local w, h = fleet_extent(self.fleet)
+    self.dimen = Geom:new{ x = 0, y = 0, w = w * self.square, h = h * self.square }
+    self.sunk = sunk_ships(self.fleet, self.target)
+    self.hull = { cell = self.square, line = 1, inset = math.max(2, math.floor(self.square * 0.14)) }
+end
+
+function FleetWidget:getSize()
+    return Geom:new{ w = self.dimen.w, h = self.dimen.h }
+end
+
+function FleetWidget:paintTo(bb, x, y)
+    self.dimen.x, self.dimen.y = x, y
+    local c = self.square
+    local _w, rows = fleet_extent(self.fleet)
+    local ox = x
+    for i, shape in ipairs(Board.FLEETS[self.fleet]) do
+        local r = Board.rotations(shape)[1]
+        local ship = { shape = shape, x = 0, y = 0, rot = 0 }
+        local oy = y + math.floor((rows - r.h) * c / 2)
+        local sunk = self.sunk[i]
+        for _j, cell in ipairs(r.cells) do
+            BoardWidget.paintHull(self.hull, bb, ox + cell[1] * c, oy + cell[2] * c, cell[1], cell[2], ship,
+                sunk and Blitbuffer.COLOR_GRAY_D or Blitbuffer.COLOR_GRAY_5)
+        end
+        if sunk then -- struck through
+            local t = math.max(2, math.floor(c / 8))
+            bb:paintRect(ox, oy + math.floor((r.h * c - t) / 2), r.w * c, t, Blitbuffer.COLOR_BLACK)
+        end
+        ox = ox + (r.w + 1) * c
+    end
+end
+
+--- How many of the fleet's ships are sunk.
+function FleetWidget:sunkCount()
+    local n = 0
+    for _i, sunk in ipairs(self.sunk) do if sunk then n = n + 1 end end
+    return n
+end
+
 -- Game screen ------------------------------------------------------------------
 
 local status_heights = {} -- width → height of 3 status lines
@@ -893,6 +967,7 @@ function GameScreen:build()
             on_tap = not m.ready and function(x, y) self:onOwnTap(x, y) end or nil,
         }
         self.board_widgets = { own = boards }
+        self.fleet_view = nil
     else
         local face = Font:getFace("cfont", 16)
         local label_target = TextWidget:new{ text = _("Opponent's board"), face = face }
@@ -900,14 +975,24 @@ function GameScreen:build()
         local label_h = label_target:getSize().h
         local target_size, own_size
         local landscape = w > h
+        -- the opponent's fleet in small below their board: size from a first guess of the board
+        local fleet_w, fleet_h = fleet_extent(m.fleet)
+        local guess = landscape and math.floor((inner_w - pad) * 0.58) or math.min(inner_w, math.floor(avail_h * 0.6))
+        local mini = math.max(4, math.min(math.floor(guess / fleet_w), math.floor(guess / (Board.SIZE + 1) * 0.45)))
+        local gap = Size.padding.default
+        local fleet_space = fleet_h * mini + gap
         if landscape then
-            target_size = math.min(math.floor((inner_w - pad) * 0.58), avail_h - label_h)
+            target_size = math.min(math.floor((inner_w - pad) * 0.58), avail_h - label_h - fleet_space)
             own_size = math.min(inner_w - pad - target_size, avail_h - label_h)
         else
-            local h2 = avail_h - 2 * label_h - pad
+            local h2 = avail_h - 2 * label_h - pad - fleet_space
             target_size = math.min(inner_w, math.floor(h2 * 0.6))
             own_size = math.min(inner_w, h2 - target_size)
         end
+        -- no wider than the board
+        mini = math.max(4, math.min(mini, math.floor(target_size / fleet_w)))
+        local fleet_view = FleetWidget:new{ fleet = m.fleet, target = m.target, square = mini }
+        self.fleet_view = fleet_view
         local anim = self.anim
         local target = BoardWidget:new{
             size = target_size, mode = "target", target = m.target, last = m.last_fired,
@@ -922,7 +1007,7 @@ function GameScreen:build()
         local group = landscape and HorizontalGroup or VerticalGroup
         boards = group:new{
             align = landscape and "top" or "center",
-            VerticalGroup:new{ align = "center", label_target, target },
+            VerticalGroup:new{ align = "center", label_target, target, VerticalSpan:new{ width = gap }, fleet_view },
             landscape and HorizontalSpan:new{ width = pad } or VerticalSpan:new{ width = pad },
             VerticalGroup:new{ align = "center", label_own, own },
         }
@@ -957,6 +1042,7 @@ end
 -- for that one.
 function GameScreen:update(hint)
     local layout = self.layout
+    local sunk_before = self.fleet_view and self.fleet_view:sunkCount()
     self:build()
     if not hint or layout ~= self.layout then
         UIManager:setDirty(self, "ui")
@@ -967,6 +1053,9 @@ function GameScreen:update(hint)
     local prev, now_last = self.previous_last and self.previous_last[board], self.last_shown[board]
     if prev and prev ~= now_last then
         UIManager:setDirty(self, function() return "ui", self.board_widgets[board]:cellRegion(prev) end)
+    end
+    if self.fleet_view and self.fleet_view:sunkCount() ~= sunk_before then
+        UIManager:setDirty(self, function() return "ui", self.fleet_view.dimen end)
     end
     if hint.cells then
         local animated = self.anim and self.anim.board == board

@@ -33,7 +33,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
 - The host's device picks who fires first. After a hit you fire again; after a miss it's the opponent's turn.
 - Water around a sunk ship is marked automatically. Whoever sinks the whole enemy fleet first wins; the loser then sees the winner's remaining ships. **Play again** starts a new round once both players tap it.
 
-Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined.
+Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined. Below the opponent's board, their fleet in small: ships still afloat dark, sunk ones light and struck through.
 
 ## Network
 - TCP 7531 (the game, host), UDP 7532 (host answers searches), UDP 7533 (searching device listens for answers).
