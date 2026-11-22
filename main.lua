@@ -236,6 +236,7 @@ local function free_canvases()
     end
 end
 local function frame_count(kind, cells)
+    if kind == "shell" then return 1 end -- our shell, until the result comes
     if kind == "miss" then return 6 end
     if kind == "hit" then return 5 end
     return math.min(#cells, SINK_STEPS) + 3
@@ -262,8 +263,15 @@ local BoardWidget = InputContainer:extend{
 function BoardWidget:init()
     local n = Board.SIZE + 1
     self.cell = math.floor(self.size / n)
-    self.dimen = Geom:new{ x = 0, y = 0, w = self.cell * n, h = self.cell * n }
     self.line = math.max(1, math.floor(self.cell / 25))
+    if self.cell * n + 2 * self.line > self.size then -- keep within size, outer border included
+        self.cell = self.cell - 1
+        self.line = math.max(1, math.floor(self.cell / 25))
+    end
+    -- the outer grid line (2 × line) lies past the last square: it belongs to
+    -- the widget, or a canvas of the widget's size (animations) cuts it off
+    local side = self.cell * n + 2 * self.line
+    self.dimen = Geom:new{ x = 0, y = 0, w = side, h = side }
     self.inset = math.max(self.line + 1, math.floor(self.cell * 0.14))
     self.blocked = self.mode == "own" and self.selected and self.board:blocked(self.selected) or nil
     local fs = font_sizes[self.cell]
@@ -319,6 +327,15 @@ function BoardWidget:region(cells)
     }
 end
 
+--- Screen rectangle of one square (with its outline, see last).
+function BoardWidget:cellRegion(cell)
+    local c = self.cell
+    return Geom:new{
+        x = self.dimen.x + c * (cell[1] + 1), y = self.dimen.y + c * (cell[2] + 1),
+        w = c + 2 * self.line, h = c + 2 * self.line,
+    }
+end
+
 local function paint_centered(bb, widget, x, y, w, h)
     local size = widget:getSize()
     widget:paintTo(bb, x + math.floor((w - size.w) / 2), y + math.floor((h - size.h) / 2))
@@ -362,6 +379,11 @@ function BoardWidget:paintAnim(bb, ox, oy)
     local function flash() -- black over the squares and their neighbours
         local x0, y0, x1, y1 = bounds(anim.cells, 1, 0)
         bb:paintRect(ox + x0 * c, oy + y0 * c, (x1 - x0 + 1) * c + line, (y1 - y0 + 1) * c + line, black)
+    end
+
+    if anim.kind == "shell" then
+        shell(center(anim.cells[1]))
+        return
     end
 
     if anim.kind == "miss" then
@@ -607,6 +629,16 @@ end
 
 -- Game screen ------------------------------------------------------------------
 
+local status_heights = {} -- width → height of 3 status lines
+local function status_min_height(width)
+    if not status_heights[width] then
+        local probe = TextBoxWidget:new{ text = "M\nM\nM", face = Font:getFace("cfont", 18), width = width }
+        status_heights[width] = probe:getSize().h
+        probe:free()
+    end
+    return status_heights[width]
+end
+
 local GameScreen = InputContainer:extend{
     covers_fullscreen = true,
     selected = nil, -- ship being moved while placing
@@ -617,14 +649,16 @@ local GameScreen = InputContainer:extend{
 -- "own" or "target" board. Frame 1 is painted with the next update(), the rest
 -- every FRAME_TIME with a fast refresh of just those squares and their
 -- neighbours; a normal refresh cleans up at the end.
-function GameScreen:animate(board, kind, cells, ship)
+function GameScreen:animate(board, kind, cells, ship, first)
     self:stopAnimation()
     local set = {}
     for _i, c in ipairs(cells) do set[c[2] * Board.SIZE + c[1]] = true end
-    self.anim = { board = board, kind = kind, cells = cells, set = set, ship = ship, frame = 1,
+    self.anim = { board = board, kind = kind, cells = cells, set = set, ship = ship, frame = first or 1,
         frames = frame_count(kind, cells) }
-    self.anim_step = function() self:animationStep() end
-    UIManager:scheduleIn(FRAME_TIME, self.anim_step)
+    if self.anim.frame < self.anim.frames then
+        self.anim_step = function() self:animationStep() end
+        UIManager:scheduleIn(FRAME_TIME, self.anim_step)
+    end
 end
 
 function GameScreen:stopAnimation()
@@ -659,20 +693,31 @@ function GameScreen:animationStep()
     if not done then UIManager:scheduleIn(FRAME_TIME, self.anim_step) end
 end
 
---- Animates a shot's result (event "result" on the target board, "incoming" on ours).
+--- Animates a shot's result (event "result" on the target board, "incoming" on
+-- ours); after our shell (see onTargetTap) it goes on from frame 2. Returns
+-- the squares the shot changed (the shot's, or the sunk ship's), also with
+-- animations off.
 function GameScreen:animateShot(board, ev)
-    if not game.animations then return end
     local m = game.match
     local kind = ev.result == "miss" and "miss" or ev.result == "hit" and "hit" or "sunk"
     local cells, ship = { { ev.x, ev.y } }, nil
     if kind == "sunk" then
         local where = board == "target" and m.target or m.board
         local i = where:ship_at(ev.x, ev.y)
-        if not i then return end
-        ship = where.ships[i]
-        cells = Board.cells(ship)
+        if i then
+            ship = where.ships[i]
+            cells = Board.cells(ship)
+        else
+            kind = "hit"
+        end
     end
-    self:animate(board, kind, cells, ship)
+    local shelled = self.anim and self.anim.kind == "shell" and self.anim.board == board
+    if game.animations then
+        self:animate(board, kind, cells, ship, shelled and kind ~= "sunk" and 2 or 1)
+    elseif shelled then
+        self:stopAnimation()
+    end
+    return cells
 end
 
 function GameScreen:onCloseWidget()
@@ -782,7 +827,10 @@ end
 
 function GameScreen:onTargetTap(x, y)
     local m = game.match
-    if m:fire(x, y) then self:update() end
+    if not m:fire(x, y) then return end
+    -- show our shell at once, without waiting for the result
+    if game.animations then self:animate("target", "shell", { { x, y } }) end
+    self:update{ board = "target", cells = game.animations and { { x, y } } or nil }
 end
 
 function GameScreen:build()
@@ -790,6 +838,9 @@ function GameScreen:build()
     local m = game.match
     local pad = Size.padding.large
     local inner_w = w - 2 * pad
+    local last = self.last_shown
+    self.previous_last = last
+    self.last_shown = { target = m.last_fired, own = m.last_incoming }
     self.title_bar = TitleBar:new{
         width = w,
         fullscreen = true,
@@ -805,10 +856,19 @@ function GameScreen:build()
         width = inner_w,
         alignment = "center",
     }
+    -- room for 3 lines at least, so that the boards stay put when the text changes
+    local status_h = math.max(status:getSize().h, status_min_height(inner_w))
     local row = self:buttonRow()
     local buttons = row and ButtonTable:new{ width = inner_w, buttons = { row }, show_parent = self }
-    local used = self.title_bar:getSize().h + status:getSize().h + 3 * pad
+    local title_h = self.title_bar:getSize().h
+    local used = title_h + status_h + 3 * pad
         + (buttons and buttons:getSize().h + pad or 0)
+    self.status_region = Geom:new{ x = 0, y = title_h + pad, w = w, h = status_h }
+    -- what decides where things are: when it changes, the whole screen is refreshed
+    local enabled = {}
+    for _i, b in ipairs(row or {}) do enabled[#enabled + 1] = tostring(b.enabled ~= false) end
+    self.layout = table.concat({ w, h, m.phase, status_h, table.concat(enabled, ","), tostring(game.lost),
+        m.peer or "", tostring(self.selected), tostring(m.ready) }, "|")
     local avail_h = h - used
 
     local boards
@@ -859,7 +919,7 @@ function GameScreen:build()
         self.title_bar,
         VerticalSpan:new{ width = pad },
         status,
-        VerticalSpan:new{ width = pad },
+        VerticalSpan:new{ width = status_h - status:getSize().h + pad },
         boards,
         VerticalSpan:new{ width = pad },
     }
@@ -875,9 +935,31 @@ function GameScreen:build()
     }
 end
 
-function GameScreen:update()
+--- Rebuilds the screen and refreshes it. hint = { board = "own" | "target",
+-- cells } when only a shot changed: then, if nothing moved, only the status
+-- line, the shot's squares (and their neighbours) and the old last-shot outline
+-- are refreshed, not the whole screen (faster on e-ink). The squares of a
+-- running animation get a fast refresh, sent last: the next frame only waits
+-- for that one.
+function GameScreen:update(hint)
+    local layout = self.layout
     self:build()
-    UIManager:setDirty(self, "ui")
+    if not hint or layout ~= self.layout then
+        UIManager:setDirty(self, "ui")
+        return
+    end
+    UIManager:setDirty(self, "ui", self.status_region)
+    local board = hint.board
+    local prev, now_last = self.previous_last and self.previous_last[board], self.last_shown[board]
+    if prev and prev ~= now_last then
+        UIManager:setDirty(self, function() return "ui", self.board_widgets[board]:cellRegion(prev) end)
+    end
+    if hint.cells then
+        local animated = self.anim and self.anim.board == board
+        UIManager:setDirty(self, function()
+            return animated and "fast" or "ui", self.board_widgets[board]:region(hint.cells)
+        end)
+    end
 end
 
 function GameScreen:onClose()
@@ -938,7 +1020,10 @@ local function connection_lost(reason)
         else game.message = m.peer and T(_("Connection to %1 lost."), who) or _("Connection lost.") end
         if game.host then game.host:close(); game.host = nil end
     end
-    if game.screen then game.screen:update() end
+    if game.screen then
+        game.screen:stopAnimation()
+        game.screen:update()
+    end
 end
 
 local RESULT_TEXT = {
@@ -970,10 +1055,16 @@ function Battleships.onGameEvent(ev)
             or T(_("The battle begins. %1 fires first."), m.peer)
     elseif t == "result" then
         game.message = T(RESULT_TEXT[ev.result], Board.label(ev.x, ev.y))
-        if game.screen then game.screen:animateShot("target", ev) end
+        if game.screen then
+            game.screen:update{ board = "target", cells = game.screen:animateShot("target", ev) }
+            return
+        end
     elseif t == "incoming" then
         game.message = T(INCOMING_TEXT[ev.result], m.peer, Board.label(ev.x, ev.y))
-        if game.screen then game.screen:animateShot("own", ev) end
+        if game.screen then
+            game.screen:update{ board = "own", cells = game.screen:animateShot("own", ev) }
+            return
+        end
     elseif t == "rematch" then
         game.message = _("New game: place your ships.")
         if game.screen then

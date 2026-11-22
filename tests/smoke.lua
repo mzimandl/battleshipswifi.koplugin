@@ -264,6 +264,11 @@ local status = find_all(screen, function(w) return w.alignment == "center" end)[
 eq(status:match("Your address: 192.168.1.20") ~= nil, true, "host address shown")
 eq(#boards(screen), 1, "one board while placing")
 eq(paint(boards(screen)[1]) > 30, true, "board painted")
+do
+    local bw = boards(screen)[1]
+    eq(bw:getSize().w, 11 * bw.cell + 2 * bw.line, "the board's size includes the outer grid line")
+    eq(bw:getSize().w <= bw.size, true, "and stays within the size it was given")
+end
 
 -- discovery answered while waiting
 local hudp = udp_on(7532)
@@ -317,10 +322,28 @@ if client.sent:match("START guest\n$") then
     tick()
     eq(client.sent:match("RESULT %d+ %d+ miss\n$") ~= nil, true, "opponent's miss answered")
 end
+-- refreshes requested by one update: "kind" or "kind@w" for a region, lambdas run as after painting
+local function refreshes()
+    local out = {}
+    for _i, d in ipairs(dirty) do
+        local kind, region = d.kind, d.region
+        if type(kind) == "function" then kind, region = kind() end
+        out[#out + 1] = region and (kind .. "@" .. region.w) or kind
+    end
+    return table.concat(out, " ")
+end
+dirty = {}
 boards(screen)[1].on_tap(3, 4)
 eq(client.sent:match("SHOT 3 4\n$") ~= nil, true, "tap fires")
+eq(screen.anim and screen.anim.kind, "shell", "our shell shown at once")
+paint(boards(screen)[1])
+local cw = 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line
+eq(refreshes(), "ui@600 fast@" .. cw, "tap: status line and the square's surroundings, not the whole screen")
+dirty = {}
 client.incoming = { "RESULT 3 4 hit\n" }
 tick()
+paint(boards(screen)[1])
+eq(refreshes(), "ui@600 fast@" .. cw, "result: the same, no full refresh")
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
 eq(status:match("^D5: hit! Fire again.") ~= nil, true, "result shown")
 eq(screen.anim and screen.anim.kind, "hit", "hit animated")
@@ -329,13 +352,14 @@ paint(boards(screen)[1])
 dirty = {}
 local blits = screen_bb.calls
 vsyncs = 0
-eq(run_tasks(), 5, "four more frames and the cleanup")
-eq(vsyncs, 5, "every frame waits for the previous refresh")
-eq(screen_bb.calls - blits, 5, "every frame: one copy of the region to the screen")
+eq(screen.anim.frame, 2, "the hit goes on after the shell")
+eq(run_tasks(), 4, "three more frames and the cleanup")
+eq(vsyncs, 4, "every frame waits for the previous refresh")
+eq(screen_bb.calls - blits, 4, "every frame: one copy of the region to the screen")
 eq(dirty[1].w, nil, "frames don't repaint the whole game screen")
 local kinds = {}
 for _i, d in ipairs(dirty) do kinds[#kinds + 1] = d.kind end
-eq(table.concat(kinds, " "), "fast fast fast fast ui", "fast refreshes, then a normal one")
+eq(table.concat(kinds, " "), "fast fast fast ui", "fast refreshes, then a normal one")
 eq(dirty[1].region.w, 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line, "only the square and its neighbours are refreshed")
 eq(screen.anim, nil, "animation over")
 eq(boards(screen)[1].anim, nil, "board drawn as usual")
