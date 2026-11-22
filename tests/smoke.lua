@@ -51,11 +51,13 @@ stub("ffi/blitbuffer", setmetatable({ new = function() return fake_bb() end }, {
 stub("datastorage", { getSettingsDir = function() return root .. "/settings" end })
 stub("logger", { warn = print, info = function() end, dbg = function() end })
 local kindle = false
+local dpad = true
 stub("device", {
     model = "Kindle Test",
     isKindle = function() return kindle end,
     hasKeys = function() return true end,
-    input = { group = { Back = "Back" } },
+    hasDPad = function() return dpad end,
+    input = { group = { Back = "Back", PgFwd = "PgFwd", PgBack = "PgBack" } },
     screen = { getWidth = function() return 600 end, getHeight = function() return 800 end, bb = screen_bb },
 })
 stub("ui/font", { getFace = function(_, name, size) return { name = name, size = size } end })
@@ -74,6 +76,7 @@ stub("ui/widget/horizontalspan", class())
 stub("ui/widget/titlebar", sized(50))
 stub("ui/widget/textboxwidget", sized(40))
 stub("ui/widget/buttontable", sized(45))
+stub("ui/widget/buttondialog", class())
 local TextWidget = sized(20)
 TextWidget.getFontSizeToFitHeight = function(_, _name, h) return h end
 TextWidget.paintTo = function() end
@@ -237,6 +240,11 @@ local plugin = Battleships:new{ ui = { menu = { registerToMainMenu = function() 
 local menu_items = {}
 plugin:addToMainMenu(menu_items)
 eq(menu_items.battleshipswifi.text, "Battleships (Wi-Fi)", "main menu entry")
+local function by_id(items, id)
+    for _i, it in ipairs(items) do
+        if it.battleshipswifi_item == id then return it end
+    end
+end
 local function item(id)
     for _i, it in ipairs(menu_items.battleshipswifi.sub_item_table_func()) do
         if it.battleshipswifi_item == id then return it end
@@ -284,9 +292,9 @@ end
 
 -- discovery answered while waiting
 local hudp = udp_on(7532)
-hudp.inbox = { { "DISCOVER 3", "192.168.1.30", 7533 } }
+hudp.inbox = { { "DISCOVER 4", "192.168.1.30", 7533 } }
 tick()
-eq(hudp.out[1] and hudp.out[1][1], "GAME 3 7531 classic Martin", "discovery answered")
+eq(hudp.out[1] and hudp.out[1][1], "GAME 4 7531 classic 10 Martin", "discovery answered")
 
 -- placing: select, rotate, move
 local game_board = boards(screen)[1].board
@@ -304,10 +312,10 @@ buttons(screen)["Random"].callback()
 eq(screen.selected, nil, "Random clears the selection")
 
 -- a guest joins
-local client = fake_tcp({ "HELLO 3 Guest\n" })
+local client = fake_tcp({ "HELLO 4 Guest\n" })
 table.insert(pending_clients, client)
 tick(2)
-eq(client.sent:match("^WELCOME 3 classic Martin\n") ~= nil, true, "host welcomes the guest")
+eq(client.sent:match("^WELCOME 4 classic 10 Martin\n") ~= nil, true, "host welcomes the guest")
 eq(screen.title_bar.subtitle, "Opponent: Guest", "opponent shown")
 -- a third device is turned away
 local extra = fake_tcp()
@@ -468,7 +476,7 @@ eq(last_close_refresh, "full", "screen below refreshed")
 -- Host: a guest leaving before the battle frees the seat ------------------------
 item("host").sub_item_table_func()[1].callback()
 screen = shown[#shown]
-client = fake_tcp({ "HELLO 3 Guest\n" })
+client = fake_tcp({ "HELLO 4 Guest\n" })
 table.insert(pending_clients, client)
 tick(2)
 client.incoming = { "CLOSE" }
@@ -477,10 +485,10 @@ status = find_all(screen, function(w) return w.alignment == "center" end)[1].tex
 eq(status:match("^Guest left.") ~= nil, true, "guest left before the battle")
 eq(screen.title_bar.subtitle, nil, "waiting for another opponent")
 hudp = udp_on(7532)
-hudp.inbox = { { "DISCOVER 3", "192.168.1.31", 7533 } }
+hudp.inbox = { { "DISCOVER 4", "192.168.1.31", 7533 } }
 tick()
 eq(#hudp.out, 1, "discovery answered again")
-client = fake_tcp({ "HELLO 3 Second\n" })
+client = fake_tcp({ "HELLO 4 Second\n" })
 table.insert(pending_clients, client)
 tick(2)
 eq(screen.title_bar.subtitle, "Opponent: Second", "another guest joins")
@@ -504,7 +512,7 @@ eq(#zmqs, 0, "game ended")
 local function status_of(sc) return sc:statusText() end
 item("host").sub_item_table_func()[1].callback()
 screen = shown[#shown]
-client = fake_tcp({ "HELLO 3 Guest\n" })
+client = fake_tcp({ "HELLO 4 Guest\n" })
 table.insert(pending_clients, client)
 tick(2)
 local session = client.sent:match("SESSION (%w+)\n")
@@ -519,28 +527,28 @@ tick()
 eq(status_of(screen), "Connection to Guest lost.\nWaiting for Guest to come back…", "host waits for the guest")
 eq(buttons(screen)["Close"] ~= nil and boards(screen)[1].on_tap == nil, true, "only Close, no shots while waiting")
 hudp = udp_on(7532)
-hudp.inbox = { { "DISCOVER 3", "192.168.1.31", 7533 } }
+hudp.inbox = { { "DISCOVER 4", "192.168.1.31", 7533 } }
 tick()
-eq(hudp.out[#hudp.out][1], "RESUMEGAME 3 7531 " .. session, "searches answered with the session")
+eq(hudp.out[#hudp.out][1], "RESUMEGAME 4 7531 " .. session, "searches answered with the session")
 -- a stranger is turned away, the host keeps waiting
-local stranger = fake_tcp({ "HELLO 3 Stranger\n" })
+local stranger = fake_tcp({ "HELLO 4 Stranger\n" })
 table.insert(pending_clients, stranger)
 tick(2)
 eq(stranger.sent .. tostring(stranger.closed), "ERROR busy\ntrue", "a stranger is turned away")
 eq(status_of(screen):find("Waiting for Guest to come back", 1, true) ~= nil, true, "still waiting")
 -- the guest comes back
-local back = fake_tcp({ "RESUME 3 " .. session .. " 2 Guest\n" })
+local back = fake_tcp({ "RESUME 4 " .. session .. " 2 Guest\n" })
 table.insert(pending_clients, back)
 tick(2)
-eq(back.sent:match("^RESUMED 3 %d+\n") ~= nil, true, "host answers RESUMED")
+eq(back.sent:match("^RESUMED 4 %d+\n") ~= nil, true, "host answers RESUMED")
 eq(status_of(screen):match("^Connection to Guest restored.") ~= nil, true, "restored: " .. status_of(screen))
 eq(boards(screen)[1].on_tap ~= nil or status_of(screen):find("aiming", 1, true) ~= nil, true, "the game goes on")
 -- the guest comes back over a new connection before the host noticed the old one was gone
-local again = fake_tcp({ "RESUME 3 " .. session .. " 2 Guest\n" })
+local again = fake_tcp({ "RESUME 4 " .. session .. " 2 Guest\n" })
 table.insert(pending_clients, again)
 tick(3)
 eq(back.closed, true, "the old connection is dropped")
-eq(again.sent:match("^RESUMED 3") ~= nil, true, "and the new one goes on")
+eq(again.sent:match("^RESUMED 4") ~= nil, true, "and the new one goes on")
 -- going to sleep keeps the game; waking up listens again
 local binds_before = #udps
 plugin:onSuspend()
@@ -550,7 +558,7 @@ eq(status_of(screen), "Connection to Guest restored.\nWaiting for Guest to come 
 plugin:onResume()
 tick()
 eq(#udps > binds_before, true, "listening again after waking up")
-local after = fake_tcp({ "RESUME 3 " .. session .. " 2 Guest\n" })
+local after = fake_tcp({ "RESUME 4 " .. session .. " 2 Guest\n" })
 table.insert(pending_clients, after)
 tick(2)
 eq(status_of(screen):match("^Connection to Guest restored.") ~= nil and after.sent:match("^RESUMED") ~= nil, true,
@@ -558,7 +566,7 @@ eq(status_of(screen):match("^Connection to Guest restored.") ~= nil and after.se
 -- an unknown session is refused, the game keeps waiting for the right one
 after.incoming = { "CLOSE" }
 tick()
-local wrong = fake_tcp({ "RESUME 3 othergame 0 Guest\n" })
+local wrong = fake_tcp({ "RESUME 4 othergame 0 Guest\n" })
 table.insert(pending_clients, wrong)
 tick(2)
 eq(wrong.sent .. tostring(wrong.closed), "ERROR resume\ntrue", "RESUME of another game refused")
@@ -585,16 +593,16 @@ dialog.text_value = "10.0.0.9:7000"
 dialog.buttons[1][2].callback()
 eq(connect_to, "10.0.0.9:7000", "connects to the address")
 local sock = tcps[#tcps]
-eq(sock.sent, "HELLO 3 Martin\n", "guest says hello")
+eq(sock.sent, "HELLO 4 Martin\n", "guest says hello")
 screen = shown[#shown]
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
 eq(status:match("Connecting…$") ~= nil, true, "guest waits for WELCOME")
-sock.incoming = { "WELCOME 3 shapes Host\n" }
+sock.incoming = { "WELCOME 4 shapes 10 Host\n" }
 tick()
 eq(screen.title_bar.subtitle, "Opponent: Host", "guest joined")
 eq(#boards(screen)[1].board.ships, 6, "guest places the host's shaped fleet")
 status = find_all(screen, function(w) return w.alignment == "center" end)[1].text
-eq(status:match("^You joined Host's game. Fleet: Shaped ships.") ~= nil, true, "fleet named: " .. status)
+eq(status:match("^You joined Host's game: Shaped ships.") ~= nil, true, "fleet named: " .. status)
 eq(paint(boards(screen)[1]) > 30, true, "shaped ships painted")
 sock.incoming = { "READY\n" }
 tick()
@@ -615,7 +623,7 @@ dialog.text_value = "10.0.0.9"
 dialog.buttons[1][2].callback()
 sock = tcps[#tcps]
 screen = shown[#shown]
-sock.incoming = { "WELCOME 3 classic Host\nSESSION abc123\nREADY\n" }
+sock.incoming = { "WELCOME 4 classic 10 Host\nSESSION abc123\nREADY\n" }
 tick()
 eq(sock.sent:find("SESSION abc123\n", 1, true) ~= nil, true, "guest answers SESSION")
 buttons(screen)["Ready"].callback()
@@ -630,8 +638,8 @@ tick()
 eq(#tcps > tcps_before, true, "a new connection attempt")
 local resock = tcps[#tcps]
 tick()
-eq(resock.sent:match("^RESUME 3 abc123 %d+ Martin\n") ~= nil, true, "guest asks to resume: " .. resock.sent)
-resock.incoming = { "RESUMED 3 1\n" }
+eq(resock.sent:match("^RESUME 4 abc123 %d+ Martin\n") ~= nil, true, "guest asks to resume: " .. resock.sent)
+resock.incoming = { "RESUMED 4 1\n" }
 tick()
 eq(status_of(screen):match("^Connection to Host restored.") ~= nil, true, "guest restored: " .. status_of(screen))
 eq(udp_on(7533) == nil or udp_on(7533).closed, true, "the search for the host's address stopped")
@@ -659,14 +667,14 @@ eq(#zmqs, 1, "search polled")
 local sudp = udp_on(7533)
 tick()
 eq(#sudp.out, 2, "DISCOVER broadcast")
-sudp.inbox = { { "GAME 3 7531 shapes Host", "192.168.1.40", 7532 } }
+sudp.inbox = { { "GAME 4 7531 shapes 10 Host", "192.168.1.40", 7532 } }
 tick()
 eq(menu.item_table[1].text .. " " .. menu.item_table[1].mandatory, "Host (Shaped ships) 192.168.1.40", "game listed with its fleet")
 eq(menu.item_table[2].text, "Join by address…", "join by address below")
 clock = clock + 10
 tick()
 eq(menu.item_table[1].text, "Searching for games…", "silent game dropped")
-sudp.inbox = { { "GAME 3 7531 shapes Host", "192.168.1.40", 7532 } }
+sudp.inbox = { { "GAME 4 7531 shapes 10 Host", "192.168.1.40", 7532 } }
 tick()
 menu.item_table[1].callback()
 eq(sudp.closed, true, "search stopped when the list closes")
@@ -679,9 +687,9 @@ eq(#zmqs .. " " .. standby, "0 0", "exit ends the game")
 local ai_items = item("ai").sub_item_table_func()
 eq(ai_items[1].text .. "|" .. ai_items[2].text, "Classic ships|Shaped ships", "fleets to play against the e-reader")
 eq(ai_items[1].checked_func == nil, true, "plain items")
-eq(ai_items[3].text_func(), "Difficulty: Normal", "normal difficulty by default")
-ai_items[3].sub_item_table[3].callback()
-eq(item("ai").sub_item_table_func()[3].text_func(), "Difficulty: Hard", "difficulty saved")
+eq(by_id(ai_items, "ai_level").text_func(), "Difficulty: Normal", "normal difficulty by default")
+by_id(ai_items, "ai_level").sub_item_table[3].callback()
+eq(by_id(item("ai").sub_item_table_func(), "ai_level").text_func(), "Difficulty: Hard", "difficulty saved")
 local sockets_before = #tcps + #udps
 ai_items[2].callback()
 screen = shown[#shown]
@@ -725,6 +733,72 @@ eq(#boards(screen), 1, "the e-reader plays again: placing")
 eq(screen.title_bar.subtitle, score_before, "the score stays for the next game")
 plugin:onExit()
 eq(#zmqs .. " " .. standby, "0 0", "exit ends it")
+
+-- Rules picked in the menu, and key control ------------------------------------------
+do
+    local host_menu = item("host").sub_item_table_func()
+    local size_item, salvo_item, touch_item = by_id(host_menu, "rules_size"), by_id(host_menu, "rules_salvo"),
+        by_id(host_menu, "rules_touch")
+    eq(size_item.checked_func() or salvo_item.checked_func() or touch_item.checked_func(), false, "classic rules by default")
+    eq(by_id(item("ai").sub_item_table_func(), "rules_salvo") ~= nil, true, "the rules against the e-reader too")
+    size_item.callback(); salvo_item.callback()
+    eq(size_item.checked_func() and salvo_item.checked_func() and not touch_item.checked_func(), true, "12 × 12 and salvo on")
+    by_id(host_menu, "host_classic").callback()
+    screen = shown[#shown]
+    eq(boards(screen)[1].n .. " " .. boards(screen)[1].board.size, "12 12", "the host places on 12 × 12")
+    hudp = udp_on(7532)
+    hudp.inbox = { { "DISCOVER 4", "192.168.1.30", 7533 } }
+    tick()
+    eq(hudp.out[#hudp.out][1], "GAME 4 7531 classic 12s Martin", "the rules are announced")
+    client = fake_tcp({ "HELLO 4 Guest\n" })
+    table.insert(pending_clients, client)
+    tick(2)
+    eq(client.sent:match("^WELCOME 4 classic 12s Martin\n") ~= nil, true, "and sent in WELCOME")
+    client.incoming = { "READY\n" }
+    buttons(screen)["Ready"].callback()
+    tick()
+    eq(#boards(screen), 2, "salvo battle")
+    if client.sent:match("START guest\n") then
+        -- the guest's salvo: 5 misses
+        local own = boards(screen)[2].board
+        local n = 0
+        for y = 0, 11 do for x = 0, 11 do
+            if n < 5 and not own:ship_at(x, y) then
+                client.incoming = { ("SHOT %d %d\n"):format(x, y) }
+                tick()
+                n = n + 1
+            end
+        end end
+    end
+    eq(screen:statusText():match("Shots left: 5%.$") ~= nil, true, "our salvo: 5 shots: " .. screen:statusText())
+    -- keys: the cursor appears on the opponent's board and fires there
+    dirty, vsyncs = {}, 0
+    screen:onKeyMove({ 1, 0 })
+    eq(screen.cursor ~= nil and dirty[#dirty].kind .. " " .. vsyncs, "fast 1", "a key shows the cursor (fast refresh)")
+    eq(boards(screen)[1].cursor, screen.cursor, "on the opponent's board")
+    paint(boards(screen)[1])
+    local cx, cy = screen.cursor[1], screen.cursor[2]
+    screen:onKeyMove({ -1, 0 })
+    eq(screen.cursor[1], (cx - 1) % 12, "arrows move it (round the edge)")
+    screen:onKeyAct()
+    eq(client.sent:match(("SHOT %d %d\n$"):format(screen.cursor[1], screen.cursor[2])) ~= nil, true, "Press fires at the cursor")
+    client.incoming = { ("RESULT %d %d miss\n"):format(screen.cursor[1], screen.cursor[2]) }
+    tick()
+    eq(screen:statusText():match("Shots left: 4%.$") ~= nil, true, "a salvo shot used: " .. screen:statusText())
+    local fx, fy = screen.cursor[1], screen.cursor[2]
+    screen:onKeyStep(1)
+    eq(boards(screen)[1].target:can_fire(screen.cursor[1], screen.cursor[2]), true, "page keys step to a square not fired at")
+    eq(screen.cursor[1] ~= fx or screen.cursor[2] ~= fy, true, "past the one fired at")
+    -- Menu: the screen's buttons in a dialog
+    local shown_before = #shown
+    screen:onKeyMenu()
+    eq(#shown, shown_before + 1, "Menu shows a dialog")
+    eq(shown[#shown].buttons[#shown[#shown].buttons][1].text, "Close", "with Close at least")
+    -- back to the classic rules for the rest
+    size_item.callback(); salvo_item.callback()
+    screen:onClose()
+    if shown[#shown].ok_callback then shown[#shown].ok_callback() end
+end
 
 -- Placing: dragging and mirroring ------------------------------------------------
 do
@@ -857,7 +931,7 @@ eq(find_item(menu_of(p2), "continue"), nil, "no Continue entry then")
 -- a network game (host)
 find_item(menu_of(p2), "host").sub_item_table_func()[1].callback()
 screen = shown[#shown]
-client = fake_tcp({ "HELLO 3 Guest\n" })
+client = fake_tcp({ "HELLO 4 Guest\n" })
 table.insert(pending_clients, client)
 tick(2)
 session = client.sent:match("SESSION (%w+)\n")
@@ -875,10 +949,10 @@ screen = shown[#shown]
 tick()
 eq(#udps > udps_before, true, "the restored host listens again")
 eq(screen:statusText(), "Continuing the game against Guest.\nWaiting for Guest to come back…", "and waits for the guest")
-local returning = fake_tcp({ "RESUME 3 " .. session .. " 1 Guest\n" })
+local returning = fake_tcp({ "RESUME 4 " .. session .. " 1 Guest\n" })
 table.insert(pending_clients, returning)
 tick(2)
-eq(returning.sent:match("^RESUMED 3") ~= nil, true, "the guest resumes with the restored host")
+eq(returning.sent:match("^RESUMED 4") ~= nil, true, "the guest resumes with the restored host")
 eq(screen:statusText():match("^Connection to Guest restored.") ~= nil, true, "restored: " .. screen:statusText())
 screen:onClose()
 shown[#shown].ok_callback()
@@ -886,7 +960,7 @@ eq(stores[game_file].game, nil, "leaving drops the saved game")
 -- a game that can't resume (an older guest without SESSION) isn't saved
 find_item(menu_of(p3), "host").sub_item_table_func()[1].callback()
 screen = shown[#shown]
-client = fake_tcp({ "HELLO 3 Old\nREADY\n" })
+client = fake_tcp({ "HELLO 4 Old\nREADY\n" })
 table.insert(pending_clients, client)
 tick(2)
 buttons(screen)["Ready"].callback()

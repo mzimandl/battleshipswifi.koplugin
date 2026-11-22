@@ -21,13 +21,14 @@ local Match = require("battleshipswifi/match")
 local M = {}
 
 M.LEVELS = { "easy", "normal", "hard" }
+local SALVO_DELAY = 0.6 -- seconds between the shots of a salvo (after the first)
 M.DEFAULT_LEVEL = "normal"
 
-local SIZE = Board.SIZE
+local KEY = Board.KEY -- keys of squares in sets
 local ORTHO = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
 
 local function unknown(target, x, y)
-    return Board.inside(x, y) and target.marks[y][x] == nil
+    return Board.inside(x, y, target.size) and target.marks[y][x] == nil
 end
 
 local function pick(list, rand)
@@ -38,8 +39,8 @@ end
 -- Squares hit but not (yet) part of a sunk ship.
 local function open_hits(target)
     local hits = {}
-    for y = 0, SIZE - 1 do
-        for x = 0, SIZE - 1 do
+    for y = 0, target.size - 1 do
+        for x = 0, target.size - 1 do
             if target.marks[y][x] == "hit" then hits[#hits + 1] = { x, y } end
         end
     end
@@ -48,8 +49,8 @@ end
 
 local function random_shot(target, rand, parity)
     local all, even = {}, {}
-    for y = 0, SIZE - 1 do
-        for x = 0, SIZE - 1 do
+    for y = 0, target.size - 1 do
+        for x = 0, target.size - 1 do
             if target.marks[y][x] == nil then
                 all[#all + 1] = { x, y }
                 if (x + y) % 2 == 0 then even[#even + 1] = { x, y } end
@@ -65,12 +66,12 @@ local function next_to_hits(target, hits)
     for _i, h in ipairs(hits) do
         for _j, d in ipairs(ORTHO) do
             local x, y = h[1] + d[1], h[2] + d[2]
-            local k = y * SIZE + x
+            local k = y * KEY + x
             if unknown(target, x, y) and not seen[k] then
                 seen[k] = true
                 near[#near + 1] = { x, y }
                 local bx, by = h[1] - d[1], h[2] - d[2]
-                if Board.inside(bx, by) and target.marks[by][bx] == "hit" then line[#line + 1] = { x, y } end
+                if Board.inside(bx, by, target.size) and target.marks[by][bx] == "hit" then line[#line + 1] = { x, y } end
             end
         end
     end
@@ -101,26 +102,26 @@ function M.density(target, fleet)
     local hits = open_hits(target)
     local function count(through_hits)
         local density, total = {}, 0
-        for y = 0, SIZE - 1 do density[y] = {} end
+        for y = 0, target.size - 1 do density[y] = {} end
         for _i, shape in ipairs(M.afloat(target, fleet)) do
             for _r, rot in ipairs(Board.rotations(shape)) do
-                for oy = 0, SIZE - rot.h do
-                    for ox = 0, SIZE - rot.w do
+                for oy = 0, target.size - rot.h do
+                    for ox = 0, target.size - rot.w do
                         local ok, covered, mine = true, 0, {}
                         for _c, c in ipairs(rot.cells) do
                             local x, y = ox + c[1], oy + c[2]
                             local mark = marks[y][x]
                             if mark == "hit" then covered = covered + 1
                             elseif mark ~= nil then ok = false; break end
-                            mine[y * SIZE + x] = true
+                            mine[y * KEY + x] = true
                         end
-                        if ok and (covered > 0) == through_hits then
+                        if ok and (covered > 0) == through_hits and not target.touch then
                             -- a hit next to it, but not in it, would be another ship touching this one
                             for _c, c in ipairs(rot.cells) do
                                 for dy = -1, 1 do
                                     for dx = -1, 1 do
                                         local x, y = ox + c[1] + dx, oy + c[2] + dy
-                                        if Board.inside(x, y) and marks[y][x] == "hit" and not mine[y * SIZE + x] then
+                                        if Board.inside(x, y, target.size) and marks[y][x] == "hit" and not mine[y * KEY + x] then
                                             ok = false
                                         end
                                     end
@@ -154,8 +155,8 @@ end
 local function likeliest(target, fleet, rand)
     local density = M.density(target, fleet)
     local best, top = {}, 0
-    for y = 0, SIZE - 1 do
-        for x = 0, SIZE - 1 do
+    for y = 0, target.size - 1 do
+        for x = 0, target.size - 1 do
             local d = density[y][x] or 0
             if d > top then best, top = { { x, y } }, d
             elseif d == top and d > 0 then best[#best + 1] = { x, y } end
@@ -227,14 +228,17 @@ function Player:poll(now)
     elseif m.phase == "over" and m.peer_rematch and not m.rematch then
         m:request_rematch()
     elseif m:my_turn() then
+        -- the first shot of a turn after `delay`, the next ones of a salvo quicker
         self.turn_since = self.turn_since or now
-        if now - self.turn_since >= self.delay then
+        local wait = (self.in_turn and m.rules.salvo) and math.min(self.delay, SALVO_DELAY) or self.delay
+        if now - self.turn_since >= wait then
             self.turn_since = nil
+            self.in_turn = true
             local x, y = M.choose(self.level, m.target, m.fleet, self.rand)
             if x then m:fire(x, y) end
         end
-    else
-        self.turn_since = nil
+    elseif not m.pending then
+        self.turn_since, self.in_turn = nil, nil
     end
     return self:flush()
 end

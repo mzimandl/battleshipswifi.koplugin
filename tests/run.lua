@@ -197,8 +197,8 @@ eq(t.marks[2][3], nil, "beyond the water around it: unknown")
 -- Protocol ----------------------------------------------------------------------
 eq(Protocol.clean_name("  Ann\nB\tc  "), "Ann B c", "names lose control characters")
 eq(Protocol.clean_name(string.rep("ž", 30)), string.rep("ž", 24), "names are cut by characters")
-local cmd, words, rest = Protocol.parse("HELLO 3 Žluťoučký kůň")
-eq(cmd .. "|" .. words[1] .. "|" .. rest, "HELLO|3|3 Žluťoučký kůň", "parse")
+local cmd, words, rest = Protocol.parse("HELLO 4 Žluťoučký kůň")
+eq(cmd .. "|" .. words[1] .. "|" .. rest, "HELLO|4|4 Žluťoučký kůň", "parse")
 eq(Protocol.parse("hello"), nil, "commands are upper case")
 local buf = Protocol.buffer()
 eq(#buf:push("PI"), 0, "partial line waits")
@@ -216,8 +216,9 @@ eq(table.concat(Protocol.broadcasts("192.168.1.5"), ","), "255.255.255.255,192.1
 eq(#Protocol.broadcasts(nil), 1, "global broadcast without an address")
 eq(Protocol.is_discover(Protocol.discover()), true, "discover")
 eq(Protocol.is_discover("DISCOVER 99"), false, "other version ignored")
-local ann = Protocol.parse_announce(Protocol.announce(7531, "shapes", "Kindle Paperwhite"))
-eq(ann.port .. " " .. ann.fleet .. " " .. ann.name, "7531 shapes Kindle Paperwhite", "announce round trip")
+local ann = Protocol.parse_announce(Protocol.announce(7531, "shapes", "12st", "Kindle Paperwhite"))
+eq(ann.port .. " " .. ann.fleet .. " " .. ann.rules .. " " .. ann.name, "7531 shapes 12st Kindle Paperwhite", "announce round trip")
+eq(Protocol.parse_announce("GAME 3 7531 shapes Kindle"), nil, "version 3 announce (no rules) ignored")
 eq(Protocol.parse_announce("GAME 99 7531 classic x"), nil, "announce of another version ignored")
 eq(Protocol.parse_announce("GAME 1 7531 x"), nil, "version 1 announce ignored")
 eq(select(2, Match.new{ role = "host", name = "H", send = function() end }:receive("HELLO 2 Older")), "version",
@@ -363,9 +364,9 @@ do
     deliver2()
     eq(h2.board.fleet .. g2.board.fleet, "shapesshapes", "rematch keeps the fleet")
     local g3 = Match.new{ role = "guest", name = "G", fleet = "shapes", send = function() end }
-    local ev3 = g3:receive("WELCOME " .. Protocol.VERSION .. " shapes Host Name")
+    local ev3 = g3:receive("WELCOME " .. Protocol.VERSION .. " shapes 10 Host Name")
     eq(tostring(ev3.fleet_changed) .. " " .. g3.peer, "false Host Name", "fleet known from the game list")
-    eq(select(2, Match.new{ role = "guest", name = "G", send = function() end }:receive("WELCOME 3 boats H")),
+    eq(select(2, Match.new{ role = "guest", name = "G", send = function() end }:receive("WELCOME 4 boats 10 H")),
         "bad WELCOME", "unknown fleet refused")
 end
 
@@ -425,11 +426,11 @@ do
     eq(h.phase .. g.phase, "overover", "the resumed game ends normally")
     -- an unknown session is refused
     local h3 = Match.new{ role = "host", name = "H", send = function() end }
-    eq(select(2, h3:receive("RESUME 3 nosuchgame 0 G")), "resume", "RESUME of another game refused")
+    eq(select(2, h3:receive("RESUME 4 nosuchgame 0 G")), "resume", "RESUME of another game refused")
     eq(select(2, g:receive("ERROR resume")), "resume", "the guest learns it can't resume")
     -- an older guest (no SESSION answer): no resuming
     local h4 = Match.new{ role = "host", name = "H", send = function() end }
-    h4:receive("HELLO 3 Old")
+    h4:receive("HELLO 4 Old")
     h4:set_ready(); h4:receive("READY")
     eq(h4.phase == "battle" and not h4:can_resume(), true, "a guest that didn't answer SESSION can't resume")
 end
@@ -543,16 +544,141 @@ do
     eq(AI.player{ restore = { role = "guest" } }, nil, "an unusable e-reader snapshot is refused")
 end
 
--- protocol errors-- protocol errors
+-- rules: board size, salvo, ships that may touch -------------------------------------
+local function rules_size_of(m) return m.rules.size end
+eq(Board.encode_rules(nil) .. " " .. Board.encode_rules{ size = 12, salvo = true, touch = true }, "10 12st", "rules as a word")
+local r12 = Board.decode_rules("12s")
+eq(r12.size .. tostring(r12.salvo) .. tostring(r12.touch), "12truefalse", "rules from a word")
+eq(Board.decode_rules("11") or Board.decode_rules("x"), nil, "bad rules refused")
+do
+    local big = Board.new("shapes", { size = 12 })
+    eq(big:randomize(rng(61)), true, "a fleet fits on 12 × 12")
+    eq(big:shoot(11, 11) ~= nil, true, "squares up to L12 can be fired at")
+    eq(Board.label(11, 11), "L12", "label L12")
+    eq(Board.decode_ship("10,10,line2,0", 12) ~= nil and Board.decode_ship("10,10,line2,0") == nil, true,
+        "ships past J10 only on a 12 × 12 board")
+    local touchy = Board.new("classic", { touch = true })
+    touchy.ships = { ship(0, 0, 3, "h") }
+    eq(touchy:fits(ship(0, 1, 3, "h")), true, "touching allowed")
+    eq(touchy:fits(ship(2, 0, 2, "v")), false, "overlapping never")
+    local tt = Board.target{ touch = true }
+    tt:apply(0, 0, "hit"); tt:apply(1, 0, "sunk", ship(0, 0, 2, "h"))
+    eq(tt.marks[1][0], nil, "ships may touch: the water around a sunk one isn't marked")
+    for seed = 1, 10 do
+        local tb = Board.new("shapes", { touch = true })
+        eq(tb:randomize(rng(seed + 70)), true, "random fleet when ships may touch " .. seed)
+    end
+end
+do
+    -- salvo: as many shots a turn as ships afloat, hit or not
+    local function rules_pair(rules, seed)
+        local to_guest, to_host = {}, {}
+        local hh = Match.new{ role = "host", name = "H", rules = rules, rand = rng(seed), send = function(l) table.insert(to_guest, l) end }
+        local gg = Match.new{ role = "guest", name = "G", rand = rng(seed + 1), send = function(l) table.insert(to_host, l) end }
+        local function deliver3()
+            local any = true
+            while any do
+                any = false
+                while #to_host > 0 do
+                    any = true
+                    local l = table.remove(to_host, 1):gsub("\n$", "")
+                    local _e, err = hh:receive(l)
+                    assert(not err, "host: " .. tostring(err) .. " on " .. l)
+                end
+                while #to_guest > 0 do
+                    any = true
+                    local l = table.remove(to_guest, 1):gsub("\n$", "")
+                    local _e, err = gg:receive(l)
+                    assert(not err, "guest: " .. tostring(err) .. " on " .. l)
+                end
+            end
+        end
+        gg:hello(); deliver3()
+        hh:set_ready(); gg:set_ready(); deliver3()
+        return hh, gg, deliver3
+    end
+    local hh, gg, d3 = rules_pair({ salvo = true, size = 12 }, 81)
+    eq(gg.rules.size .. tostring(gg.rules.salvo) .. gg.board.size, "12true12", "the guest takes the host's rules")
+    eq(hh.phase, "battle", "salvo battle")
+    local shooter = hh:my_turn() and hh or gg
+    local other = shooter == hh and gg or hh
+    eq(shooter.shots_left .. " " .. other.shots_left, "5 5", "5 ships afloat: 5 shots, both sides agree")
+    local fired = 0
+    for _i, sh in ipairs(other.board.ships) do
+        for _j, c in ipairs(Board.cells(sh)) do
+            if fired < 5 and shooter:my_turn() then
+                shooter:fire(c[1], c[2]); d3(); fired = fired + 1
+            end
+        end
+    end
+    eq(fired .. " " .. tostring(shooter:my_turn()) .. " " .. tostring(other:my_turn()), "5 false true",
+        "after 5 shots (all hits) the turn passes")
+    local function play_any(a, z, dl_fn)
+        local next_shot = { [a] = 0, [z] = 0 }
+        for _step = 1, 2000 do
+            if a.phase ~= "battle" then break end
+            local sh = a:my_turn() and a or z
+            local size = sh.rules.size
+            repeat
+                local n = next_shot[sh]
+                next_shot[sh] = n + 1
+                local x, y = n % size, math.floor(n / size)
+                local ok = sh.target:can_fire(x, y) and sh:fire(x, y)
+            until ok
+            dl_fn()
+        end
+    end
+    play_any(hh, gg, d3)
+    eq(hh.phase .. gg.phase, "overover", "a salvo game on 12 × 12 ends")
+    local th, tg, d4 = rules_pair({ touch = true }, 91)
+    eq(tg.board.touch, true, "the guest plays with touching ships too")
+    play_any(th, tg, d4)
+    eq(th.phase .. tg.phase, "overover", "a game with touching ships ends")
+    for _i, rules in ipairs({ { size = 12 }, { touch = true }, { salvo = true }, { size = 12, salvo = true, touch = true } }) do
+        local ai = AI.player{ level = "hard", name = "R", rand = rng(95) }
+        local human = Match.new{ role = "host", name = "H", fleet = "shapes", rules = rules, rand = rng(96),
+            send = function(l) ai:deliver(l) end }
+        local t5 = 0
+        local function run5(n)
+            for _k = 1, n do
+                t5 = t5 + 1
+                local lines5, err = ai:poll(t5)
+                assert(not err, err)
+                for _j, l in ipairs(lines5) do assert(not select(2, human:receive(l))) end
+            end
+        end
+        run5(2); human:set_ready(); run5(1)
+        local nxt = 0
+        for _s = 1, 800 do
+            if human.phase ~= "battle" then break end
+            if human:my_turn() then
+                repeat
+                    local x, y = nxt % rules_size_of(human), math.floor(nxt / rules_size_of(human))
+                    nxt = nxt + 1
+                until human.target:can_fire(x, y) and human:fire(x, y)
+            end
+            run5(1)
+        end
+        run5(1)
+        eq(human.phase .. ai.match.phase, "overover", "against the e-reader with rules " .. Board.encode_rules(rules))
+    end
+    -- saved with its rules
+    local snap = hh:snapshot()
+    local back = Match.restore(snap, { send = function() end })
+    eq(back.rules.size .. tostring(back.rules.salvo) .. back.board.size .. back.target.size, "12true1212",
+        "a saved game keeps its rules")
+end
+
+-- protocol errors
 host, guest, deliver = pair(3)
 eq(select(2, guest:receive("SHOT 1 1")), "not your turn", "shot before the battle")
-eq(select(2, guest:receive("HELLO 3 x")), "unexpected HELLO", "guest doesn't take HELLO")
+eq(select(2, guest:receive("HELLO 4 x")), "unexpected HELLO", "guest doesn't take HELLO")
 eq(select(2, host:receive("HELLO 99 x")), "version", "other version refused")
 eq(select(2, host:receive("READY")), "unexpected READY", "READY before HELLO")
 eq(host:receive("FUTURE stuff"), nil, "unknown commands are ignored")
 eq(select(2, host:receive("ERROR busy")), "busy", "ERROR ends the match")
-host:receive("HELLO 3 G")
-eq(select(2, host:receive("HELLO 3 G")), "already joined", "second HELLO refused")
+host:receive("HELLO 4 G")
+eq(select(2, host:receive("HELLO 4 G")), "already joined", "second HELLO refused")
 host:set_ready()
 host:receive("READY")
 eq(host.phase, "battle", "host starts when both are ready")
@@ -569,7 +695,7 @@ eq(host.turn, "peer", "miss passes the turn")
 
 -- the host's opponent leaves before the battle
 host = Match.new{ role = "host", name = "H", send = function() end }
-host:receive("HELLO 3 G")
+host:receive("HELLO 4 G")
 host:receive("READY")
 host:drop_peer()
 eq(host.peer == nil and not host.peer_ready, true, "drop_peer waits for another opponent")
@@ -739,18 +865,18 @@ local fake_socket = {
 local hst = Net.host(fake_socket, 7531)
 local hudp = udps[#udps]
 eq(hudp.port, Protocol.DISCOVERY_PORT, "host listens for discovery")
-hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 }, { "junk", "10.0.0.8", 1 } }
+hudp.inbox = { { "DISCOVER 4", "10.0.0.9", 7533 }, { "junk", "10.0.0.8", 1 } }
 hst:answer("Host", "shapes")
-eq(#hudp.out .. " " .. hudp.out[1][1] .. " " .. hudp.out[1][2], "1 GAME 3 7531 shapes Host 10.0.0.9", "host answers DISCOVER only")
-hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 } }
+eq(#hudp.out .. " " .. hudp.out[1][1] .. " " .. hudp.out[1][2], "1 GAME 4 7531 shapes 10 Host 10.0.0.9", "host answers DISCOVER only")
+hudp.inbox = { { "DISCOVER 4", "10.0.0.9", 7533 } }
 hst:answer(nil)
 eq(#hudp.out, 1, "no answers once the game is full")
 
-hudp.inbox = { { "DISCOVER 3", "10.0.0.9", 7533 } }
+hudp.inbox = { { "DISCOVER 4", "10.0.0.9", 7533 } }
 hst:answer(nil, "shapes", "abc123")
-eq(hudp.out[#hudp.out][1], "RESUMEGAME 3 7531 abc123", "a host waiting for its guest answers with the session")
-eq(Protocol.parse_announce_resume("RESUMEGAME 3 7531 abc123").id, "abc123", "resume announce parsed")
-eq(Protocol.parse_announce("RESUMEGAME 3 7531 abc123"), nil, "not listed as an open game")
+eq(hudp.out[#hudp.out][1], "RESUMEGAME 4 7531 abc123", "a host waiting for its guest answers with the session")
+eq(Protocol.parse_announce_resume("RESUMEGAME 4 7531 abc123").id, "abc123", "resume announce parsed")
+eq(Protocol.parse_announce("RESUMEGAME 4 7531 abc123"), nil, "not listed as an open game")
 
 -- connecting without blocking
 do
@@ -779,12 +905,12 @@ local sudp = udps[#udps]
 eq(sudp.port, Protocol.SEARCH_PORT, "search listens on its port")
 search:send()
 eq(#sudp.out .. " " .. sudp.out[2][2], "2 10.0.0.255", "discover broadcast to both addresses")
-sudp.inbox = { { "GAME 3 7531 shapes Host", "10.0.0.9", 7532 }, { "GAME 3 7531 shapes Host", "10.0.0.9", 7532 } }
+sudp.inbox = { { "GAME 4 7531 shapes 10 Host", "10.0.0.9", 7532 }, { "GAME 4 7531 shapes 10 Host", "10.0.0.9", 7532 } }
 eq(search:poll(1), true, "found a game")
 eq(#search.games .. " " .. search.games[1].name .. " " .. search.games[1].ip .. " " .. search.games[1].fleet,
     "1 Host 10.0.0.9 shapes", "one entry per host, with its fleet")
 eq(search:poll(2), false, "nothing new")
-sudp.inbox = { { "RESUMEGAME 3 7000 abc123", "10.0.0.77", 7532 } }
+sudp.inbox = { { "RESUMEGAME 4 7000 abc123", "10.0.0.77", 7532 } }
 search:poll(3)
 eq(search.resumes.abc123 and (search.resumes.abc123.ip .. ":" .. search.resumes.abc123.port), "10.0.0.77:7000",
     "a host waiting for its guest found, at its new address")

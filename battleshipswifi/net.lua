@@ -157,10 +157,10 @@ function Host:accept()
     return client
 end
 
---- Answers discovery requests with our fleet and name (only when `name` is
--- given, i.e. while waiting for an opponent), or, with `resume` (a session id)
--- while waiting for our guest to come back, with that.
-function Host:answer(name, fleet, resume)
+--- Answers discovery requests with our fleet, rules (word) and name (only when
+-- `name` is given, i.e. while waiting for an opponent), or, with `resume` (a
+-- session id) while waiting for our guest to come back, with that.
+function Host:answer(name, fleet, resume, rules)
     if not self.udp then return end
     while true do
         local msg, ip, port = self.udp:receivefrom()
@@ -169,7 +169,7 @@ function Host:answer(name, fleet, resume)
             if resume then
                 self.udp:sendto(Protocol.announce_resume(self.port, resume), ip, port)
             elseif name then
-                self.udp:sendto(Protocol.announce(self.port, fleet or "classic", name), ip, port)
+                self.udp:sendto(Protocol.announce(self.port, fleet or "classic", rules or "10", name), ip, port)
             end
         end
     end
@@ -186,7 +186,7 @@ local Search = {}
 Search.__index = Search
 
 --- Broadcasts DISCOVER (send(now) every second or so) and collects answers in
--- `games` (list of { ip, port, fleet, name, seen }), and the hosts waiting for
+-- `games` (list of { ip, port, fleet, rules, name, seen }), and the hosts waiting for
 -- their guest in `resumes` (session id → { ip, port, seen }).
 function M.search(socket, local_ip)
     local udp = socket.udp()
@@ -224,10 +224,11 @@ function Search:poll(now)
                 if g.ip == ip and g.port == game.port then found = g end
             end
             if found then
-                if found.name ~= game.name or found.fleet ~= game.fleet then changed = true end
-                found.name, found.fleet, found.seen = game.name, game.fleet, now
+                if found.name ~= game.name or found.fleet ~= game.fleet or found.rules ~= game.rules then changed = true end
+                found.name, found.fleet, found.rules, found.seen = game.name, game.fleet, game.rules, now
             else
-                table.insert(self.games, { ip = ip, port = game.port, fleet = game.fleet, name = game.name, seen = now })
+                table.insert(self.games, { ip = ip, port = game.port, fleet = game.fleet, rules = game.rules,
+                    name = game.name, seen = now })
                 changed = true
             end
         end

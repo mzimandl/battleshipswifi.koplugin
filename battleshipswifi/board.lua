@@ -10,7 +10,35 @@ diagonally. Wire form: "x,y,shape,rot".
 
 local M = {}
 
-M.SIZE = 10
+M.SIZE = 10 -- the classic board; rules may make it bigger (SIZES)
+M.SIZES = { 10, 12 }
+
+--- Rules the host picks (protocol 4): size of the board, salvo (as many shots a
+-- turn as ships afloat, see match.lua) and touch (ships may touch). Missing
+-- fields get the classic values.
+function M.rules(r)
+    r = r or {}
+    local size = (r.size == 12) and 12 or 10
+    return { size = size, salvo = r.salvo == true, touch = r.touch == true }
+end
+
+--- Rules as one word for the wire: "10", "12s", "10t", "12st"…
+function M.encode_rules(r)
+    r = M.rules(r)
+    return tostring(r.size) .. (r.salvo and "s" or "") .. (r.touch and "t" or "")
+end
+
+--- A word from encode_rules() back, or nil.
+function M.decode_rules(word)
+    local size, flags = (word or ""):match("^(%d+)([st]*)$")
+    size = tonumber(size)
+    if size ~= 10 and size ~= 12 then return nil end
+    return { size = size, salvo = flags:find("s", 1, true) ~= nil, touch = flags:find("t", 1, true) ~= nil }
+end
+
+-- Keys of squares in sets: y * KEY + x (any size).
+local KEY = 100
+M.KEY = KEY
 
 --- Ship shapes: their squares as { x, y } offsets.
 M.SHAPES = {
@@ -42,8 +70,10 @@ M.FLEETS = {
 M.FLEET_ORDER = { "classic", "shapes" }
 M.DEFAULT_FLEET = "classic"
 
-local function inside(x, y)
-    return x >= 0 and y >= 0 and x < M.SIZE and y < M.SIZE
+--- Whether (x, y) is on a board of `size` (default SIZE).
+local function inside(x, y, size)
+    size = size or M.SIZE
+    return x >= 0 and y >= 0 and x < size and y < size
 end
 M.inside = inside
 
@@ -152,15 +182,15 @@ local function covers(ship, x, y)
 end
 M.covers = covers
 
---- Water squares around a ship (inside the board).
-function M.around(ship)
+--- Water squares around a ship (inside a board of `size`).
+function M.around(ship, size)
     local out, seen = {}, {}
     for _i, c in ipairs(M.cells(ship)) do
         for dy = -1, 1 do
             for dx = -1, 1 do
                 local x, y = c[1] + dx, c[2] + dy
-                local k = y * M.SIZE + x
-                if inside(x, y) and not seen[k] and not covers(ship, x, y) then
+                local k = y * KEY + x
+                if inside(x, y, size) and not seen[k] and not covers(ship, x, y) then
                     seen[k] = true
                     out[#out + 1] = { x, y }
                 end
@@ -175,7 +205,8 @@ function M.encode_ship(ship)
     return string.format("%d,%d,%s,%d", ship.x, ship.y, ship.shape, ship.rot)
 end
 
-function M.decode_ship(s)
+--- A ship from encode_ship(), on a board of `size` (default SIZE), or nil.
+function M.decode_ship(s, size)
     local x, y, shape, rot = (s or ""):match("^(%d+),(%d+),(%l[%l%d]*),(%d+)$")
     if not x then return nil end
     local rotations = M.rotations(shape)
@@ -183,7 +214,7 @@ function M.decode_ship(s)
     local ship = { x = tonumber(x), y = tonumber(y), shape = shape, rot = tonumber(rot), hits = 0 }
     if ship.rot >= #rotations then return nil end
     local w, h = M.extent(ship)
-    if not inside(ship.x, ship.y) or not inside(ship.x + w - 1, ship.y + h - 1) then return nil end
+    if not inside(ship.x, ship.y, size) or not inside(ship.x + w - 1, ship.y + h - 1, size) then return nil end
     return ship
 end
 
@@ -192,10 +223,12 @@ end
 local Board = {}
 Board.__index = Board
 
---- fleet: a key of FLEETS (DEFAULT_FLEET when nil).
-function M.new(fleet)
-    local b = setmetatable({ fleet = fleet or M.DEFAULT_FLEET, ships = {}, shots = {} }, Board)
-    for y = 0, M.SIZE - 1 do b.shots[y] = {} end
+--- fleet: a key of FLEETS (DEFAULT_FLEET when nil); rules: see M.rules().
+function M.new(fleet, rules)
+    rules = M.rules(rules)
+    local b = setmetatable({ fleet = fleet or M.DEFAULT_FLEET, ships = {}, shots = {},
+        size = rules.size, touch = rules.touch }, Board)
+    for y = 0, b.size - 1 do b.shots[y] = {} end
     return b
 end
 
@@ -206,21 +239,24 @@ function Board:ship_at(x, y)
     end
 end
 
---- Whether `ship` fits on the board without touching the others (ship `skip` ignored).
+--- Whether `ship` fits on the board without overlapping (or, unless the rules
+-- allow it, touching) the others (ship `skip` ignored).
 function Board:fits(ship, skip)
     local w, h = M.extent(ship)
-    if not inside(ship.x, ship.y) or not inside(ship.x + w - 1, ship.y + h - 1) then return false end
+    local size = self.size
+    if not inside(ship.x, ship.y, size) or not inside(ship.x + w - 1, ship.y + h - 1, size) then return false end
     local taken = {}
     for i, other in ipairs(self.ships) do
         if i ~= skip then
-            for _j, c in ipairs(M.cells(other)) do taken[c[2] * M.SIZE + c[1]] = true end
+            for _j, c in ipairs(M.cells(other)) do taken[c[2] * KEY + c[1]] = true end
         end
     end
+    local reach = self.touch and 0 or 1
     for _i, c in ipairs(M.cells(ship)) do
-        for dy = -1, 1 do
-            for dx = -1, 1 do
+        for dy = -reach, reach do
+            for dx = -reach, reach do
                 local x, y = c[1] + dx, c[2] + dy
-                if inside(x, y) and taken[y * M.SIZE + x] then return false end
+                if inside(x, y, size) and taken[y * KEY + x] then return false end
             end
         end
     end
@@ -241,7 +277,7 @@ function Board:randomize(rand)
                 local r = rotations[rot + 1]
                 local ship = {
                     shape = shape, rot = rot, hits = 0,
-                    x = rand(M.SIZE - r.w + 1) - 1, y = rand(M.SIZE - r.h + 1) - 1,
+                    x = rand(self.size - r.w + 1) - 1, y = rand(self.size - r.h + 1) - 1,
                 }
                 if self:fits(ship) then
                     table.insert(self.ships, ship)
@@ -270,8 +306,8 @@ function Board:position(i, x, y, rot)
     local r = M.rotations(ship.shape)[rot + 1]
     local a = r.cells[1]
     local moved = { shape = ship.shape, rot = rot, hits = 0, x = x - a[1], y = y - a[2] }
-    moved.x = math.max(0, math.min(moved.x, M.SIZE - r.w))
-    moved.y = math.max(0, math.min(moved.y, M.SIZE - r.h))
+    moved.x = math.max(0, math.min(moved.x, self.size - r.w))
+    moved.y = math.max(0, math.min(moved.y, self.size - r.h))
     return moved
 end
 
@@ -363,9 +399,9 @@ end
 -- blocked[y][x] = true.
 function Board:blocked(i)
     local blocked = {}
-    for y = 0, M.SIZE - 1 do
+    for y = 0, self.size - 1 do
         blocked[y] = {}
-        for x = 0, M.SIZE - 1 do
+        for x = 0, self.size - 1 do
             if not self:ship_at(x, y) and not self:placed(i, x, y) then blocked[y][x] = true end
         end
     end
@@ -380,7 +416,7 @@ end
 --- An opponent's shot. Returns "miss" | "hit" | "sunk" | "won" and the ship
 -- (for sunk/won), or nil, "repeat" / "outside".
 function Board:shoot(x, y)
-    if not inside(x, y) then return nil, "outside" end
+    if not inside(x, y, self.size) then return nil, "outside" end
     if self.shots[y][x] then return nil, "repeat" end
     local i = self:ship_at(x, y)
     if not i then
@@ -414,16 +450,18 @@ end
 local Target = {}
 Target.__index = Target
 
---- marks[y][x]: nil (unknown), "miss", "near" (water next to a sunk ship),
--- "hit", "sunk". `ships` = sunk ships and, after the game, the revealed fleet.
-function M.target()
-    local t = setmetatable({ marks = {}, ships = {}, sunk = 0 }, Target)
-    for y = 0, M.SIZE - 1 do t.marks[y] = {} end
+--- marks[y][x]: nil (unknown), "miss", "near" (water next to a sunk ship, when
+-- ships may not touch), "hit", "sunk". `ships` = sunk ships and, after the game,
+-- the revealed fleet. rules: see M.rules().
+function M.target(rules)
+    rules = M.rules(rules)
+    local t = setmetatable({ marks = {}, ships = {}, sunk = 0, size = rules.size, touch = rules.touch }, Target)
+    for y = 0, t.size - 1 do t.marks[y] = {} end
     return t
 end
 
 function Target:can_fire(x, y)
-    return inside(x, y) and self.marks[y][x] == nil
+    return inside(x, y, self.size) and self.marks[y][x] == nil
 end
 
 --- Records the result of our shot; `ship` comes with sunk/won.
@@ -437,8 +475,10 @@ function Target:apply(x, y, result, ship)
         self.sunk = self.sunk + 1
         table.insert(self.ships, ship)
         for _i, c in ipairs(M.cells(ship)) do self.marks[c[2]][c[1]] = "sunk" end
-        for _i, c in ipairs(M.around(ship)) do
-            if self.marks[c[2]][c[1]] == nil then self.marks[c[2]][c[1]] = "near" end
+        if not self.touch then -- the water around it is known only when ships may not touch
+            for _i, c in ipairs(M.around(ship, self.size)) do
+                if self.marks[c[2]][c[1]] == nil then self.marks[c[2]][c[1]] = "near" end
+            end
         end
     end
 end

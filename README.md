@@ -14,6 +14,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
   - **Hard**: for every square, counts the ways the ships still afloat could lie over it, given the misses, the sunk ships and that ships don't touch, and fires at the likeliest one (about 38).
 
   Going to sleep doesn't end this game.
+- **Keys** (for readers without touch, or one hand): the arrows move a cursor on the board (it shows once a key is pressed), **Press** acts on its square like a tap (fires; while placing: picks up, turns, puts down a ship), the page keys step through the squares (in the battle, to the next one not fired at yet). Without arrows, page back steps to the next square and page forward acts. **Menu** shows the screen's buttons (Ready, Random, Mirror, Play again, Close) in a dialog that works with keys.
 - **Your name**: shown to the other player and in the list of games (default: the device model).
 - **Animations** (on by default), on both boards: a miss is a shell, a splash, a water column and spreading ripples (about 0.9 s); a hit is a shell, a flash, a fireball, flying debris and smoke over the fire (0.75 s); a sunk ship blows up square by square, then all at once, breaks up and goes down under the waves (up to about 1 s). Each frame is a fast refresh of the squares and their neighbours; turn them off on slow screens.
 
@@ -29,6 +30,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
                       .#.
     ```
 - Ships may not touch, not even at the corners.
+- Rules picked before starting (in **Host a game** and **Play against the e-reader**, they stay for the next games): **Board 12 × 12**, **Salvo** (each turn as many shots as you have ships afloat; a hit doesn't give another shot, the status line counts the shots left) and **Ships may touch** (then the water around a sunk ship isn't marked). The list of games shows them.
 - Placing: the fleet starts at random positions (**Random** shuffles it again). **Drag a ship** with your finger to move it: while dragging, the board shows where it would land (dark: it fits; hollow squares: no room; its old place light); lifting the finger off the board cancels. Or tap a ship to select it, tap it again to turn it (a quarter turn clockwise, or the next one that fits), tap the water to move it there (the leftmost square of its top row lands on the square tapped). While a ship is selected, the squares it doesn't fit on are shaded, and the status line says when it has no room to turn. With shaped ships, **Mirror** flips the selected ship (an L becomes a J, the battleship's foot goes to the other side). **Ready** when done.
 - The host's device picks who fires first. After a hit you fire again; after a miss it's the opponent's turn.
 - Water around a sunk ship is marked automatically. Whoever sinks the whole enemy fleet first wins; the loser then sees the winner's remaining ships. **Play again** starts a new round once both players tap it.
@@ -44,7 +46,7 @@ Board marks: gray ship = yours (dark gray = selected), light gray = no room for 
 - Closing or restarting KOReader (or a crash) doesn't lose such a game, nor a game against the e-reader: it is saved after every move (`settings/battleshipswifi_game.lua`), and the menu then starts with **Continue the game against …**. A network game then waits for the other device as after a lost connection (the other device must still be in the game). Starting another game, or closing this one, drops what was saved.
 
 ## Development
-Protocol version 3 since 1.0.0 (mirrored ships): versions before it (0.9.x and older) can't play with it; version 2 came with 0.3.0 (fleets, shaped ships).
+Protocol version 4 since 1.1.0 (rules: board size, salvo, touching ships): versions before it can't play with it; version 3 came with 1.0.0 (mirrored ships), 2 with 0.3.0 (fleets, shaped ships).
 
 Off-device tests (`lua5.1` works too when luajit isn't installed):
 

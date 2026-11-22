@@ -35,6 +35,7 @@ function M.new(opts)
     local m = setmetatable({
         role = opts.role,
         fleet = Board.FLEETS[opts.fleet or ""] and opts.fleet or Board.DEFAULT_FLEET,
+        rules = Board.rules(opts.rules), -- the host's choice, the guest takes them from WELCOME
         name = Protocol.clean_name(opts.name),
         send_line = opts.send,
         rand = opts.rand or math.random,
@@ -61,9 +62,10 @@ local GAME_LINES = { READY = true, START = true, SHOT = true, RESULT = true, FLE
 
 function Match:reset()
     self.phase = "placing"
-    self.board = Board.new(self.fleet)
+    self.board = Board.new(self.fleet, self.rules)
     self.board:randomize(self.rand)
-    self.target = Board.target()
+    self.target = Board.target(self.rules)
+    self.shots_left = nil -- salvo: shots left in this turn
     self.ready, self.peer_ready = false, false
     self.rematch, self.peer_rematch = false, false
     self.turn, self.pending, self.winner = nil, nil, nil
@@ -137,7 +139,34 @@ function Match:begin(first)
     self.started = true
     self.phase = "battle"
     self.turn = first == self.role and "me" or "peer"
+    self.shots_left = self.rules.salvo and self:afloat(self.turn) or nil
     return { type = "start", turn = self.turn }
+end
+
+--- Ships afloat of "me" or "peer" (for the peer: their fleet less what we sank).
+function Match:afloat(side)
+    if side == "me" then
+        local n = 0
+        for i = 1, #self.board.ships do
+            if not self.board:sunk(i) then n = n + 1 end
+        end
+        return n
+    end
+    return #Board.FLEETS[self.fleet] - self.target.sunk
+end
+
+-- After a shot (ours or theirs), whose turn it is: classic, a miss passes it;
+-- salvo, the shooter fires as many shots as they had ships afloat, hit or not.
+function Match:after_shot(result)
+    if self.phase ~= "battle" or result == "won" then return end
+    if self.rules.salvo then
+        self.shots_left = self.shots_left - 1
+        if self.shots_left > 0 then return end
+    elseif result ~= "miss" then
+        return
+    end
+    self.turn = self.turn == "me" and "peer" or "me"
+    self.shots_left = self.rules.salvo and self:afloat(self.turn) or nil
 end
 
 function Match:maybe_start()
@@ -175,9 +204,9 @@ function Match:request_rematch()
     end
 end
 
-local function coords(words)
+local function coords(self, words)
     local x, y = tonumber(words[1]), tonumber(words[2])
-    if not x or not y or x % 1 ~= 0 or y % 1 ~= 0 or not Board.inside(x, y) then return nil end
+    if not x or not y or x % 1 ~= 0 or y % 1 ~= 0 or not Board.inside(x, y, self.rules.size) then return nil end
     return x, y
 end
 
@@ -193,7 +222,7 @@ function handlers:HELLO(words, rest)
     self.peer = Protocol.clean_name(rest:match("^%S+%s*(.*)$"))
     self.log, self.received, self.peer_resumes = {}, 0, nil
     self.score = { me = 0, peer = 0 }
-    self:send("WELCOME", Protocol.VERSION, self.fleet, self.name)
+    self:send("WELCOME", Protocol.VERSION, self.fleet, Board.encode_rules(self.rules), self.name)
     self:send("SESSION", self.session)
     if self.ready then self:send("READY") end
     return { type = "joined", name = self.peer }
@@ -202,13 +231,13 @@ end
 function handlers:WELCOME(words, rest)
     if self.role ~= "guest" or self.peer then return nil, "unexpected WELCOME" end
     if tonumber(words[1]) ~= Protocol.VERSION then return nil, "version" end
-    local fleet = words[2]
-    if not Board.FLEETS[fleet or ""] then return nil, "bad WELCOME" end
-    self.peer = Protocol.clean_name(rest:match("^%S+%s+%S+%s*(.*)$"))
-    local changed = fleet ~= self.fleet
+    local fleet, rules = words[2], Board.decode_rules(words[3])
+    if not Board.FLEETS[fleet or ""] or not rules then return nil, "bad WELCOME" end
+    self.peer = Protocol.clean_name(rest:match("^%S+%s+%S+%s+%S+%s*(.*)$"))
+    local changed = fleet ~= self.fleet or Board.encode_rules(rules) ~= Board.encode_rules(self.rules)
     if changed then
-        -- the host plays another fleet: place that one
-        self.fleet = fleet
+        -- the host plays another fleet or other rules: place that
+        self.fleet, self.rules = fleet, rules
         self:reset()
     end
     if self.ready then self:send("READY") end
@@ -271,14 +300,14 @@ end
 
 function handlers:SHOT(words)
     if self.phase ~= "battle" or self.turn ~= "peer" then return nil, "not your turn" end
-    local x, y = coords(words)
+    local x, y = coords(self, words)
     if not x then return nil, "bad SHOT" end
     local result, ship = self.board:shoot(x, y)
     if not result then return nil, "bad SHOT" end
     self.last_incoming = { x, y }
     if ship then self:send("RESULT", x, y, result, Board.encode_ship(ship))
     else self:send("RESULT", x, y, result) end
-    if result == "miss" then self.turn = "me" end
+    self:after_shot(result)
     self:record("peer", result)
     if result == "won" then
         self.phase, self.winner = "over", "peer"
@@ -287,13 +316,13 @@ function handlers:SHOT(words)
 end
 
 function handlers:RESULT(words)
-    local x, y = coords(words)
+    local x, y = coords(self, words)
     local p = self.pending
     if not p or not x or p[1] ~= x or p[2] ~= y then return nil, "unexpected RESULT" end
     local result = words[3]
     local ship
     if result == "sunk" or result == "won" then
-        ship = Board.decode_ship(words[4])
+        ship = Board.decode_ship(words[4], self.rules.size)
         if not ship then return nil, "bad RESULT" end
     elseif result ~= "miss" and result ~= "hit" then
         return nil, "bad RESULT"
@@ -302,7 +331,7 @@ function handlers:RESULT(words)
     self.last_fired = { x, y }
     self.target:apply(x, y, result, ship)
     self:record("me", result)
-    if result == "miss" then self.turn = "peer" end
+    self:after_shot(result)
     if result == "won" then
         self.phase, self.winner = "over", "me"
         self:send("FLEET", self.board:encode_fleet())
@@ -314,7 +343,7 @@ function handlers:FLEET(words)
     if self.phase ~= "over" then return nil, "unexpected FLEET" end
     local ships = {}
     for _i, w in ipairs(words) do
-        local ship = Board.decode_ship(w)
+        local ship = Board.decode_ship(w, self.rules.size)
         if ship then ships[#ships + 1] = ship end
     end
     self.target:reveal(ships)
@@ -359,7 +388,7 @@ local function copy(v)
 end
 
 -- The fields a snapshot keeps (plain values and tables, no functions).
-local SAVED = { "role", "fleet", "name", "peer", "session", "started", "peer_resumes", "log", "received",
+local SAVED = { "role", "fleet", "rules", "shots_left", "name", "peer", "session", "started", "peer_resumes", "log", "received",
     "score", "stats", "phase", "ready", "peer_ready", "rematch", "peer_rematch", "turn", "pending", "winner",
     "last_fired", "last_incoming" }
 
@@ -382,15 +411,16 @@ function M.restore(snap, opts)
     for _i, k in ipairs(SAVED) do
         if snap[k] ~= nil then m[k] = copy(snap[k]) end
     end
-    m.board = Board.new(snap.fleet)
+    m.rules = Board.rules(snap.rules)
+    m.board = Board.new(snap.fleet, m.rules)
     m.board.ships = copy(snap.board.ships or {})
-    for y = 0, Board.SIZE - 1 do m.board.shots[y] = copy((snap.board.shots or {})[y] or {}) end
-    m.target = Board.target()
-    for y = 0, Board.SIZE - 1 do m.target.marks[y] = copy((snap.target.marks or {})[y] or {}) end
+    for y = 0, m.rules.size - 1 do m.board.shots[y] = copy((snap.board.shots or {})[y] or {}) end
+    m.target = Board.target(m.rules)
+    for y = 0, m.rules.size - 1 do m.target.marks[y] = copy((snap.target.marks or {})[y] or {}) end
     m.target.ships = copy(snap.target.ships or {})
     m.target.sunk = snap.target.sunk or 0
     for _i, ship in ipairs(m.board.ships) do
-        if not Board.decode_ship(Board.encode_ship(ship)) then return nil end
+        if not Board.decode_ship(Board.encode_ship(ship), m.rules.size) then return nil end
     end
     return m
 end

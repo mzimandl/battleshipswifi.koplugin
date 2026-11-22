@@ -24,21 +24,37 @@ return {
     ["Classic ships"] = "Klasické lodě",
     ["Shaped ships"] = "Tvarové lodě",
     ["%1 (%2)"] = "%1 (%2)",
-    ["You joined %1's game. Fleet: %2."] = "Připojeno ke hře: %1. Flotila: %2.",
+    ["You joined %1's game: %2."] = "Připojeno ke hře hráče %1: %2.",
+    ["%1 × %1"] = "%1 × %1",
+    ["salvo"] = "salvy",
+    ["ships may touch"] = "lodě se smějí dotýkat",
+    ["Board %1 × %1"] = "Plán %1 × %1",
+    ["Salvo: as many shots a turn as ships afloat"] = "Salvy: za tah tolik výstřelů, kolik pluje lodí",
+    ["Ships may touch"] = "Lodě se smějí dotýkat",
+    ["%1: hit!"] = "%1: zásah!",
+    ["Your turn: tap a square on the opponent's board. Shots left: %1."] = "Jste na tahu: klepněte na pole soupeřova plánu. Zbývá výstřelů: %1.",
     [ [[The host picks the fleet. Classic ships: five straight ships of 5, 4, 3, 3 and 2 squares. Shaped ships: an aircraft carrier (a row of 4 with 2 below the middle), a cruiser (a cross of 5), a battleship (a row of 4 with 1 below), a destroyer (an L of 4) and two submarines of 2. Ships lie on a 10 × 10 board and may not touch, not even at the corners.
 
 Players take turns firing at a square of the opponent's board. After a hit you fire again, after a miss it's the opponent's turn. Whoever sinks the whole enemy fleet first wins.
 
 Two players: both devices must be on the same Wi-Fi network. One player hosts the game, the other finds it in Find a game or joins by the address shown on the host's screen.
 
-One player: Play against the e-reader, on one device and without a network. The e-reader plays easy, normal or hard (Difficulty).]] ] =
+One player: Play against the e-reader, on one device and without a network. The e-reader plays easy, normal or hard (Difficulty).
+
+Rules to pick before starting (Host a game, Play against the e-reader): a 12 × 12 board, salvo (each turn as many shots as you have ships afloat, a hit doesn't give another one) and ships that may touch (then the water around a sunk ship isn't marked).
+
+With keys: the arrows (or the page keys) move a cursor on the board, Press fires or picks up, turns and puts down a ship; without arrows, page back steps to the next square and page forward fires. Menu shows the screen's buttons.]] ] =
         [[Flotilu vybírá zakládající hráč. Klasické lodě: pět rovných lodí o 5, 4, 3, 3 a 2 polích. Tvarové lodě: letadlová loď (řada 4 polí a pod jejím středem 2), křižník (kříž z 5 polí), bitevní loď (řada 4 polí a pod ní 1), torpédoborec (L ze 4 polí) a dvě ponorky po 2 polích. Lodě leží na plánu 10 × 10 a nesmějí se dotýkat, ani rohem.
 
 Hráči se střídají ve střelbě na pole soupeřova plánu. Po zásahu střílíte znovu, po minutí je na tahu soupeř. Kdo první potopí celou nepřátelskou flotilu, vyhrává.
 
 Dva hráči: obě zařízení musí být ve stejné síti Wi-Fi. Jeden hráč hru založí, druhý ji najde v Najít hru nebo se připojí podle adresy zobrazené na obrazovce zakládajícího hráče.
 
-Jeden hráč: Hrát proti čtečce, na jednom zařízení a bez sítě. Čtečka hraje lehce, středně nebo těžce (Obtížnost).]],
+Jeden hráč: Hrát proti čtečce, na jednom zařízení a bez sítě. Čtečka hraje lehce, středně nebo těžce (Obtížnost).
+
+Pravidla se volí před začátkem (Založit hru, Hrát proti čtečce): plán 12 × 12, salvy (za tah tolik výstřelů, kolik vám pluje lodí, zásah další výstřel nedává) a lodě, které se smějí dotýkat (pak se voda kolem potopené lodi neoznačuje).
+
+Klávesami: šipky (nebo tlačítka pro otáčení stránek) posouvají kurzor po plánu, Press vystřelí nebo loď vybere, otočí a položí; bez šipek posune tlačítko zpět kurzor na další pole a tlačítko vpřed vystřelí. Menu ukáže tlačítka obrazovky.]],
 
     -- joining
     ["Join by address"] = "Připojit se podle adresy",
