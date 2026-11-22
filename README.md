@@ -38,7 +38,7 @@ In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices mu
 
 In the battle the opponent's board is the big one (on top, or on the left in landscape), with their fleet below it; yours is the small one. The title shows the opponent and the score.
 
-Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined. Below the opponent's board, their fleet in small: ships still afloat dark, sunk ones light and struck through.
+Board marks: gray ship = yours (dark gray = selected), light gray = no room for the selected ship, dot in a ring = miss, flame = hit, black ship = sunk, light dot = water next to a sunk ship. The last shot is outlined. Below the opponent's board, their fleet in small: ships still afloat dark, sunk ones light and crossed out.
 
 ## Network
 - TCP 7531 (the game, host), UDP 7532 (host answers searches), UDP 7533 (searching device listens for answers).

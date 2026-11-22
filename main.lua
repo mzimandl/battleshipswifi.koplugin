@@ -230,6 +230,15 @@ local function fill_polygon(bb, pts, color)
     end
 end
 
+--- A straight line `t` pixels thick from (x0, y0) to (x1, y1).
+local function thick_line(bb, x0, y0, x1, y1, t, color)
+    local dx, dy = x1 - x0, y1 - y0
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len == 0 then return end
+    local nx, ny = -dy / len * t / 2, dx / len * t / 2
+    fill_polygon(bb, { { x0 + nx, y0 + ny }, { x1 + nx, y1 + ny }, { x1 - nx, y1 - ny }, { x0 - nx, y0 - ny } }, color)
+end
+
 --- An explosion: a star with uneven spikes (8 by default) around (cx, cy), radius r.
 local function blast(bb, cx, cy, r, color, phase, spikes)
     local pts = {}
@@ -779,7 +788,7 @@ end
 -- Fleet overview ---------------------------------------------------------------
 
 --- The opponent's fleet in small: ships still afloat dark, sunk ones light and
--- struck through. cell = size of a square; fleet and target = Board.target().
+-- crossed out. cell = size of a square; fleet and target = Board.target().
 local FleetWidget = WidgetContainer:extend{
     fleet = nil,
     target = nil,
@@ -835,9 +844,12 @@ function FleetWidget:paintTo(bb, x, y)
             BoardWidget.paintHull(self.hull, bb, ox + cell[1] * c, oy + cell[2] * c, cell[1], cell[2], ship,
                 sunk and Blitbuffer.COLOR_GRAY_D or Blitbuffer.COLOR_GRAY_5)
         end
-        if sunk then -- struck through
-            local t = math.max(2, math.floor(c / 8))
-            bb:paintRect(ox, oy + math.floor((r.h * c - t) / 2), r.w * c, t, Blitbuffer.COLOR_BLACK)
+        if sunk then -- crossed out
+            -- over the ship's width and the whole strip's height (flat ships too)
+            local t = math.max(2, math.floor(c / 5))
+            local x0, y0, x1, y1 = ox, y, ox + r.w * c, y + rows * c
+            thick_line(bb, x0, y0, x1, y1, t, Blitbuffer.COLOR_BLACK)
+            thick_line(bb, x0, y1, x1, y0, t, Blitbuffer.COLOR_BLACK)
         end
         ox = ox + (r.w + 1) * c
     end
