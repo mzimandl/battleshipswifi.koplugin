@@ -2,6 +2,32 @@
 
 The classic Battleships game for two players, each on their own e-reader, over Wi-Fi, or for one player against the e-reader. English, with a Czech translation (Lodě). Installs as `battleshipswifi` (until 0.2.0 `battleships`: uninstall that one, the name you set is taken over).
 
+## Install
+
+Through [ZenPM](https://github.com/xZenLabs/zen-pm) with the repository https://github.com/mzimandl/koplugins, or by hand:
+
+[![Download battleshipswifi.koplugin.zip](https://img.shields.io/badge/Download-battleshipswifi.koplugin.zip-2ea44f?style=for-the-badge)](https://github.com/mzimandl/battleshipswifi.koplugin/releases/latest/download/battleshipswifi.koplugin.zip)
+
+1. Download the zip above.
+2. Connect the reader to the computer and unpack the zip into KOReader's
+   `plugins` folder, so that there is a folder `battleshipswifi.koplugin` in it:
+
+   | Device | Folder |
+   |---|---|
+   | Kindle | `koreader/plugins/` on the Kindle's drive |
+   | Kobo | `.adds/koreader/plugins/` on the Kobo's drive (`.adds` is a hidden folder) |
+   | PocketBook | `applications/koreader/plugins/` |
+   | Android | `koreader/plugins/` in the internal storage |
+   | Linux (AppImage) | `~/.config/koreader/plugins/` |
+   | Linux (Flatpak) | `~/.var/app/rocks.koreader.KOReader/config/koreader/plugins/` |
+   | macOS | `~/Library/Application Support/koreader/plugins/` |
+
+   Elsewhere it is the `plugins` folder inside the KOReader folder.
+3. Restart KOReader.
+
+To update, download the zip again and replace the `battleshipswifi.koplugin` folder.
+Your settings and a saved game are kept: they are stored outside the plugin's folder.
+
 ## Playing
 In the menu: **Tools → Battleships (Wi-Fi)**. For two players, both devices must be on the same Wi-Fi network.
 
@@ -49,6 +75,8 @@ Board marks: gray ship = yours (dark gray = selected), light gray = no room for 
 - Closing or restarting KOReader (or a crash) doesn't lose such a game, nor a game against the e-reader: it is saved after every move (`settings/battleshipswifi_game.lua`), and the menu then starts with **Continue the game against …**. A network game then waits for the other device as after a lost connection (the other device must still be in the game). Starting another game, or closing this one, drops what was saved.
 
 ## Development
+Releases: bump `version` in `_meta.lua`, add its section to [CHANGELOG.md](CHANGELOG.md), push, then push the tag `v<version>`; the *Release* workflow checks both, runs the tests and attaches `battleshipswifi.koplugin.zip` to the GitHub release.
+
 Protocol version 4 since 1.1.0 (rules: board size, salvo, touching ships): versions before it can't play with it; version 3 came with 1.0.0 (mirrored ships), 2 with 0.3.0 (fleets, shaped ships).
 
 Off-device tests (`lua5.1` works too when luajit isn't installed):
