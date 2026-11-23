@@ -4,6 +4,12 @@ Versions are the `version` in `_meta.lua`; since 1.1.6 each has a
 [release](https://github.com/mzimandl/battleshipswifi.koplugin/releases) with
 `battleshipswifi.koplugin.zip`.
 
+## 1.1.7 – 2026-11-23
+
+- KOReader no longer crashes when it quits or restarts (an update through
+  ZenPM, for example) during a game or a search.
+- On a Kindle, firewall rules left by a crash are not added twice.
+
 ## 1.1.6 – 2026-11-23
 
 - Against the e-reader, its shot waits until the animation of yours has ended,

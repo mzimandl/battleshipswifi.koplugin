@@ -210,7 +210,10 @@ end
 
 local function tick(n)
     for _i = 1, n or 1 do
-        for _j, z in ipairs({ unpack(zmqs) }) do eq(z.waitEvent(z), nil, "waitEvent returns nil") end
+        for _j, z in ipairs({ unpack(zmqs) }) do
+            eq(z.waitEvent(z), nil, "waitEvent returns nil")
+            eq(type(z.stop), "function", "a ZMQ has stop() for UIManager:quit()")
+        end
     end
 end
 
@@ -291,6 +294,7 @@ os.execute = function(cmd) table.insert(executed, cmd) end
 item("host").sub_item_table_func()[1].callback()
 os.execute = real_execute
 eq(#executed, 4, "Kindle firewall opened for TCP and discovery")
+eq(executed[1]:match("^iptables %-C (.+) 2>/dev/null || iptables %-A (.+)$") ~= nil, true, "a rule is added only when missing")
 local screen = shown[#shown]
 eq(screen.covers_fullscreen, true, "game screen shown")
 eq(#zmqs, 1, "game polled")

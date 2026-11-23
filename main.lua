@@ -178,9 +178,17 @@ local function search_rules()
 end
 
 -- Opens (op "-A") or closes ("-D") ports in the Kindle firewall (as httpinspector does).
+-- A rule is added only when missing (-C), so rules left by a crash aren't doubled
+-- and one -D removes it.
 local function kindle_firewall(op, rules)
     if not rules or not Device:isKindle() then return end
-    for _i, rule in ipairs(rules) do os.execute("iptables " .. op .. " " .. rule) end
+    for _i, rule in ipairs(rules) do
+        if op == "-A" then
+            os.execute("iptables -C " .. rule .. " 2>/dev/null || iptables -A " .. rule)
+        else
+            os.execute("iptables " .. op .. " " .. rule)
+        end
+    end
 end
 
 -- Stops trying to reconnect (guest) and searching for the host's new address.
@@ -194,13 +202,18 @@ local function stop_reconnect()
 end
 
 -- Polling: UIManager calls a ZMQ's waitEvent() about every 50 ms; it must
--- return nil (anything else is treated as an input event).
+-- return nil (anything else is treated as an input event). UIManager:quit()
+-- calls every ZMQ's stop() (KOReader exiting or restarting, e.g. after an
+-- update, without onExit() first): without one quitting crashes.
 local function poller(fn, name)
-    return UIManager:insertZMQ({ waitEvent = function()
-        local ok, err = pcall(fn)
-        if not ok then logger.warn("Battleships:", name, err) end
-        return nil
-    end })
+    return UIManager:insertZMQ({
+        waitEvent = function()
+            local ok, err = pcall(fn)
+            if not ok then logger.warn("Battleships:", name, err) end
+            return nil
+        end,
+        stop = function() end,
+    })
 end
 
 -- Board widget -----------------------------------------------------------------
