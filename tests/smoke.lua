@@ -390,7 +390,7 @@ do
     dirty = {}
     screen:animate("own", "miss", { { 0, 0 } })
     local cleaned = false
-    for _i, d in ipairs(dirty) do if d.kind == "partial" then cleaned = true end end
+    for _i, d in ipairs(dirty) do if d.kind == "[partial]" then cleaned = true end end
     eq(cleaned, true, "an interrupted animation gets its clean-up refresh")
     -- (put the hit back for the checks below)
     screen:stopAnimation()
@@ -430,7 +430,7 @@ eq(screen_bb.calls - blits, 4, "every frame: one copy of the region to the scree
 eq(dirty[1].w, nil, "frames don't repaint the whole game screen")
 local kinds = {}
 for _i, d in ipairs(dirty) do kinds[#kinds + 1] = d.kind end
-eq(table.concat(kinds, " "), "fast fast fast partial", "fast refreshes, then a clean-up one")
+eq(table.concat(kinds, " "), "fast fast fast [partial]", "fast refreshes, then a clean-up one (not counted for flashing)")
 eq(dirty[1].region.w, 3 * boards(screen)[1].cell + 2 * boards(screen)[1].line, "only the square and its neighbours are refreshed")
 eq(screen.anim, nil, "animation over")
 eq(boards(screen)[1].anim, nil, "board drawn as usual")
@@ -483,7 +483,7 @@ eq(screen.anim and screen.anim.board .. " " .. screen.anim.kind, expect, "miss a
 top_widget = {}
 dirty = {}
 eq(run_tasks(), 1, "covered: the animation stops")
-eq(dirty[1].w == screen and dirty[1].kind == "partial", true, "and the game screen is refreshed normally")
+eq(dirty[1].w == screen and dirty[1].kind == "[partial]", true, "and the game screen is refreshed normally")
 eq(screen.anim, nil, "no animation left")
 top_widget = nil
 

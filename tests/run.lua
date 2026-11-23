@@ -500,6 +500,32 @@ do
     eq(Match.restore(nil, {}), nil, "no snapshot")
 end
 do
+    -- the e-reader holds its shot while an animation runs, then waits its delay again
+    local ai = AI.player{ level = "normal", name = "Reader", rand = rng(61), delay = 1 }
+    local human = Match.new{ role = "host", name = "H", fleet = "classic", rand = rng(62), send = function(l) ai:deliver(l) end }
+    local function step(t, hold)
+        local lines, err = ai:poll(t, hold)
+        assert(not err, err)
+        for _i, l in ipairs(lines) do assert(not select(2, human:receive(l))) end
+        return #lines
+    end
+    step(0); human:set_ready(); step(0)
+    local t = 0
+    while human.phase == "battle" and human:my_turn() do
+        for i = 0, 99 do
+            if human.target:can_fire(i % 10, math.floor(i / 10)) then human:fire(i % 10, math.floor(i / 10)); break end
+        end
+        t = t + 1; step(t)
+    end
+    if human.phase == "battle" then
+        step(t + 0.5, true)
+        local sent = step(t + 5, true)
+        eq(sent, 0, "no shot while an animation runs")
+        eq(step(t + 5.5), 0, "the delay counts from the end of the animation")
+        eq(step(t + 6.6) > 0, true, "then it fires")
+    end
+end
+do
     -- against the e-reader: both matches saved, a SHOT on the way when it was saved
     local ai = AI.player{ level = "normal", name = "Reader", rand = rng(51) }
     local human = Match.new{ role = "host", name = "H", fleet = "classic", rand = rng(52), send = function(l) ai:deliver(l) end }

@@ -216,8 +216,9 @@ function Player:deliver(line)
 end
 
 --- Handles the delivered lines and plays (gets ready, fires, agrees to play
--- again). Returns the lines for the human's match, and an error, if any.
-function Player:poll(now)
+-- again). hold: an animation is running, don't fire yet (the delay starts
+-- again once it is over). Returns the lines for the human's match, and an error, if any.
+function Player:poll(now, hold)
     local m = self.match
     while #self.inbox > 0 do
         local _ev, err = m:receive(table.remove(self.inbox, 1))
@@ -227,6 +228,8 @@ function Player:poll(now)
         m:set_ready()
     elseif m.phase == "over" and m.peer_rematch and not m.rematch then
         m:request_rematch()
+    elseif m:my_turn() and hold then
+        self.turn_since = nil
     elseif m:my_turn() then
         -- the first shot of a turn after `delay`, the next ones of a salvo quicker
         self.turn_since = self.turn_since or now

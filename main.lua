@@ -71,7 +71,10 @@ local LEVEL_NAMES = {
     normal = _("Normal"),
     hard = _("Hard"),
 }
-local AI_DELAY = 1.2 -- seconds the e-reader "aims", so that the animations can be seen
+-- Seconds the e-reader "aims", counted from the end of the last animation: frames
+-- take longer on a slow screen (each waits for the previous refresh), and its
+-- shot's animation would cut the one still running short.
+local AI_DELAY = 0.6
 
 local FLEET_NAMES = {
     classic = _("Classic ships"),
@@ -303,9 +306,11 @@ end
 -- Animations: frame 1 is shown with the result, the next ones every FRAME_TIME.
 -- A sunk ship blows up in up to SINK_STEPS steps along its squares, then sinks.
 local FRAME_TIME = 0.15 -- seconds
--- The refresh after the last frame: "partial" (the full waveform, not "ui"'s fast
--- one) clears what the fast frames (black flashes) leave behind.
-local CLEANUP_REFRESH = "partial"
+-- The refresh after the last frame: "[partial]" (the full waveform, not "ui"'s fast
+-- one) clears what the fast frames (black flashes) leave behind. Not plain
+-- "partial": UIManager counts those and turns every FULL_REFRESH_COUNT-th
+-- (6 by default) into a flashing one (the screen blinks black or white).
+local CLEANUP_REFRESH = "[partial]"
 local SINK_STEPS = 4
 
 -- Off-screen buffers a board with an animation is painted into first, so that
@@ -1707,7 +1712,7 @@ local function poll_game()
     local t = now()
     if game.ai then
         local ai = game.ai
-        local lines, err = ai:poll(t)
+        local lines, err = ai:poll(t, game.screen and game.screen.anim ~= nil)
         if err then logger.warn("Battleships: e-reader player", err) end
         for _i, line in ipairs(lines) do
             if game.ai ~= ai or not handle_line(line) then return end
